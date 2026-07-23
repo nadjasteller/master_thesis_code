@@ -742,7 +742,7 @@ seinen Titel-Umfang (Fungal Traits, Lifestyle-Verteilung, Alluvial
 Plots, Bipartite Network) fokussiert.
 :::
 
-# DISCUSSION: Anteil an Hefen
+# DISCUSSION: Anteil an Hefen (evtl. noch Growth form mit einem anderen Trait kombinieren um nur spezielle Hefen zu bekommen?)
 
 ```{r}
 #| label: yeast-proportion-comparison
@@ -756,7 +756,7 @@ tax_traits %>%
 # ── Yeast-ASVs identifizieren ────────────────────────────────────────────────
 yeast_seqs <- tax_traits$sequence[
   grepl("yeast", tax_traits$Growth_form_template, ignore.case = TRUE) &
-  !is.na(tax_traits$Growth_form_template)
+  !is.na(tax_traits$Growth_form_template) & !is.na(tax_traits$Animal_biotrophic_capacity_template)
 ]
 
 cat("Yeast-ASVs insgesamt:", length(yeast_seqs), "von", nrow(tax_traits_unique_ps), "\n")
@@ -793,8 +793,8 @@ yeast_pct_pa <- yeast_long %>%
 cat("\n=== Yeast-Anteil pro Käferart (ASV-basiert) ===\n")
 print(yeast_pct_pa, n = Inf)
 
-# ── Speziell: die drei fraglichen Lepturini-Arten vs. Rhagium inquisitor vs. Rest ──
-comparison_species <- c("Pachytodes cerambyciformis", "Rutpela maculata", "Stenurella melanura",
+# ── Speziell: die vier fraglichen Lepturini-Arten vs. Rhagium inquisitor vs. Rest ──
+comparison_species <- c("Pachytodes cerambyciformis", "Rutpela maculata", "Stenurella melanura","Corymbia rubra", 
                         "Rhagium inquisitor")
 
 yeast_pct_reads %>%

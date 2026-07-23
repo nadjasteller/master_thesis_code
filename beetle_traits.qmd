@@ -45,7 +45,7 @@ my_species <- c(
   "Chrysobothris_affinis", "Buprestis_haemorrhoidalis", "Bolitophagus_reticulatus",
   "Rhagium_bifasciatum", "Rhagium_inquisitor", "Rhagium_mordax",
   "Rutpela_maculata", "Stenurella_melanura", "Pachytodes_cerambyciformis",
-  "Corymbia_rubra", "Grammoptera_ruficornis", "Ips_typographus", "Uleiota_planatus"
+  "Corymbia_rubra", "Grammoptera_ruficornis", "Ips_typographus"
 )
 
 # final -> Datenbank-Schreibweise

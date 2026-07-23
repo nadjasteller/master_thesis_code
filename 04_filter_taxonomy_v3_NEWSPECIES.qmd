@@ -414,7 +414,6 @@ combined_tax
 ggsave(file.path(base_path, "Results/Figures/taxonomy_combined_v3_overall.pdf"),
        plot = combined_tax, width = 14, height = 6, bg = "white")
 
-#Noch einfärben, welche Familie welchen Anteil hat?
 ```
 # Plot normalized
 
