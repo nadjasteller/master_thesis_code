@@ -134,26 +134,6 @@ ggsave(file.path(base_path, "Results/Figures/core_mycobiome_ASV.pdf"),
 ```{r}
 # ── Core-Arten (nicht ASVs) pro Käferart, zusammengefasst ────────────────────
 core_species_summary <- core_df %>%
-  left_join(tax_asv %>% select(asv_id, Genus_clean, Species_clean), by = "asv_id") %>%
-  mutate(
-    taxon_name = case_when(
-      is.na(Genus_clean) ~ paste0("Unclassified (", asv_id, ")"),
-      Species_clean %in% c("sp.", NA, "") ~ paste0(Genus_clean, " sp."),
-      TRUE ~ paste0(Genus_clean, " ", Species_clean)
-    )
-  ) %>%
-  group_by(beetle_species, taxon_name) %>%
-  summarise(
-    n_asvs        = n(),
-    max_prevalence = round(max(prevalence) * 100, 1),
-    .groups = "drop"
-  ) %>%
-  arrange(beetle_species, desc(max_prevalence))
-
-print.data.frame(as.data.frame(core_species_summary))
-
-# ── Core-Arten (nicht ASVs) pro Käferart, zusammengefasst ────────────────────
-core_species_summary <- core_df %>%
   rename(sequence = asv_id) %>%   # core_df$asv_id enthält tatsächlich Sequenzen
   left_join(tax_asv %>% select(sequence, asv_id, Genus_clean, Species_clean),
             by = "sequence") %>%

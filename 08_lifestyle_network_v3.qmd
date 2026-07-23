@@ -1036,29 +1036,6 @@ target_species_rel <- otu_ps %>%
 cat("\n=== Relativer Anteil (%) am Gesamt-Mykobiom pro Käferart ===\n")
 print(target_species_rel, n = Inf)
 
-target_species_df <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(reads > 0) %>%
-  left_join(meta_family, by = "sample") %>%
-  left_join(
-    tax_df_f %>% rownames_to_column("sequence") %>%
-      mutate(Genus_clean = gsub("g__", "", Genus),
-             Species_clean = gsub("s__", "", Species)) %>%
-      select(sequence, Genus_clean, Species_clean),
-    by = "sequence"
-  ) %>%
-  filter(Genus_clean == "Hyphopichia" & Species_clean == "rhagii" |
-         Genus_clean == "Scheffersomyces" & Species_clean == "ergatensis") %>%
-  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
-  group_by(Genus_clean, Species_clean, beetle_species, family) %>%
-  summarise(n_reads = sum(reads), n_asvs = n_distinct(sequence), .groups = "drop") %>%
-  arrange(Genus_clean, desc(n_reads))
-
-cat("=== Reads für Hyphopichia rhagii & Scheffersomyces ergatensis pro Käferart ===\n")
-print(target_species_df, n = Inf)
-
 # ── Absolute Reads + Gesamt-Reads pro Art, um Verdünnungseffekt zu prüfen ────
 total_reads_per_species <- otu_ps %>%
   rownames_to_column("sequence") %>%

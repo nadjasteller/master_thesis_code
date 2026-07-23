@@ -409,7 +409,9 @@ combined_tax <- plot_phylum + plot_genus +
 
 combined_tax
 
-ggsave(file.path(base_path, "Results/Figures/taxonomy_combined_v3.pdf"),
+# eigener Dateiname (Gesamt-Komposition, nicht nach Familie normiert) -- sonst
+# überschreibt der Plot aus "Plot normalized" unten diese Datei sofort wieder
+ggsave(file.path(base_path, "Results/Figures/taxonomy_combined_v3_overall.pdf"),
        plot = combined_tax, width = 14, height = 6, bg = "white")
 
 #Noch einfärben, welche Familie welchen Anteil hat?
@@ -511,7 +513,7 @@ combined_tax <- plot_phylum + plot_genus +
 
 combined_tax
 
-ggsave(file.path(base_path, "Results/Figures/taxonomy_combined_v3.pdf"),
+ggsave(file.path(base_path, "Results/Figures/taxonomy_combined_v3_by_family.pdf"),
        plot = combined_tax, width = 14, height = 6, bg = "white")
 ```
 

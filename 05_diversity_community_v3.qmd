@@ -389,7 +389,7 @@ ggsave(
 # Check auf Kolinearität der Prädiktoren
 
 ```{r}
-#| label: varpart
+#| label: collinearity-check
 
 # ── ASV-Tabelle auf Art-Ebene aggregieren (Traits variieren nur zwischen Arten!) ──
 asv_species <- asv_mat %>%
@@ -472,29 +472,6 @@ dist_bc <- vegdist(asv_mat, method = "bray")
 
 # family kommt direkt aus meta_df (bereits in ps_filtered.rds enthalten) --
 # nur die übrigen Traits werden aus beetle_traits.csv ergänzt.
-meta_permanova <- meta_df %>%
-  left_join(beetle_traits %>%
-              dplyr::select(species, gilde, wald, flower_visitor,
-                            body_length, hairiness_total, mycangia) %>%
-              dplyr::distinct(species, .keep_all = TRUE),
-            by = c("beetle_species" = "species")) %>%
-  mutate(
-    gilde          = as.factor(gilde),
-    wald           = as.factor(wald),
-    mycangia       = as.factor(mycangia),
-    flower_visitor = as.factor(flower_visitor),
-    family         = as.factor(family)
-  )
-
-meta_permanova <- meta_permanova[match(rownames(asv_mat), meta_permanova$sample), ]
-
-cat("NAs in Metadaten (Pterostichus hat keine Morpho-Daten):\n")
-print(colSums(is.na(meta_permanova)))
-
-#| label: permanova
-
-dist_bc <- vegdist(asv_mat, method = "bray")
-
 meta_permanova <- meta_df %>%
   left_join(beetle_traits %>%
               dplyr::select(species, gilde, wald, flower_visitor,
@@ -813,88 +790,7 @@ ggsave(file.path(base_path, "Results/Figures/venn2_ASV.pdf"),
 # 11) VP: Einzelne Beiträge zur Varianz
 
 ```{r}
-# ── Isolierter Beitrag von 'wald' zur Functional-Traits-Varianz (Art-Ebene) ──
-# Vergleich: gilde allein vs. gilde + wald, um den eigenständigen Beitrag
-# von wald über gilde hinaus zu quantifizieren (kontrolliert für Kollinearität).
-
-vp_gilde_only <- varpart(asv_species_complete,
-                          ~ family,
-                          ~ gilde + flower_visitor + body_length + hairiness_total + mycangia,
-                          data    = trait_mat_complete,
-                          transfo = "hel")
-
-vp_gilde_wald <- varpart(asv_species_complete,
-                          ~ family,
-                          ~ gilde + wald + flower_visitor + body_length + hairiness_total + mycangia,
-                          data    = trait_mat_complete,
-                          transfo = "hel")
-
-cat("=== Functional Traits unique, OHNE wald ===\n")
-print(vp_gilde_only$part$indfract)
-ft_unique_without_wald <- round(vp_gilde_only$part$indfract$Adj.R.square[2] * 100, 1)
-cat("Functional Traits unique (ohne wald):", ft_unique_without_wald, "%\n\n")
-
-cat("=== Functional Traits unique, MIT wald ===\n")
-print(vp_gilde_wald$part$indfract)
-ft_unique_with_wald <- round(vp_gilde_wald$part$indfract$Adj.R.square[2] * 100, 1)
-cat("Functional Traits unique (mit wald):", ft_unique_with_wald, "%\n\n")
-
-cat("=== Isolierter Beitrag von wald (über gilde hinaus) ===\n")
-cat("Differenz:", round(ft_unique_with_wald - ft_unique_without_wald, 1), "Prozentpunkte\n")
-
-# ── Direkter partieller Test: trägt wald signifikant bei, wenn gilde schon im Modell ist? ──
-# rda() mit Hellinger-transformierten Daten, conditioned auf gilde (+ Rest)
-
-asv_hel <- decostand(asv_species_complete, method = "hellinger")
-
-rda_with_wald <- rda(asv_hel ~ wald + Condition(gilde + flower_visitor + body_length +
-                                                  hairiness_total + mycangia),
-                      data = trait_mat_complete)
-
-cat("\n=== Partieller RDA-Test: wald, kontrolliert für restliche Functional Traits ===\n")
-print(anova(rda_with_wald, permutations = 999))
-```
-
-```{r}
-# ── Das bestehende Venn-Diagramm ---
-p_venn <- ggplot() +
-  geom_circle(
-    data = venn_df2,
-    aes(x0 = x, y0 = y, r = r, fill = label),
-    alpha = 0.4,
-    color = "white",
-    linewidth = 0
-  ) +
-  scale_fill_manual(values = c(
-    "Phylogeny" = "#2a78d6",
-    "Functional traits" = "yellow"
-  ), name = "") +
-  annotate("text", x = -0.55, y = 0.6, label = "Phylogeny",
-           size = 6, fontface = "bold") +
-  annotate("text", x = 0.55, y = 0.6, label = "Functional traits",
-           size = 6, fontface = "bold") +
-  annotate("text", x = -0.35, y = 0, label = fmt(a2), size = 6) +
-  annotate("text", x = 0.35, y = 0, label = fmt(b2), size = 6) +
-  annotate("text", x = 0, y = 0, label = fmt(c2),
-           size = 6, color = "grey30") +
-  annotate(
-    "text",
-    x = 0,
-    y = -0.75,
-    label = paste0("Residuals = ", fmt(d2)),
-    size = 6,
-    color = "grey40"
-  ) +
-  labs(title = NULL) +
-  coord_fixed(xlim = c(-1, 1), ylim = c(-0.9, 0.9)) +
-  theme_void() +
-  theme(
-    legend.position = "none"
-  )
-
-```
-```{r}
-## 11) VP: Einzelne Beiträge zur Varianz
+#| label: vp-individual-contributions
 
 # ── Isolierter Beitrag von 'wald' zur Functional-Traits-Varianz (Art-Ebene) ──
 # Vergleich: gilde allein vs. gilde + wald, um den eigenständigen Beitrag
