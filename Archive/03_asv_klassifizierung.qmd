@@ -1,0 +1,175 @@
+---
+title: "ASV Klassifizierung mit UNITE"
+author: ""
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+## Pakete laden
+
+```{r}
+library(dada2)
+library(tidyverse)
+library(dplyr)
+library(phyloseq)
+
+# Konflikte explizit lösen (zwischen dplyr und phyloseq)
+filter <- dplyr::filter
+count  <- dplyr::count
+```
+
+## Pfade definieren
+
+```{r}
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+```
+
+
+
+## Ergebnisse aufbereiten
+
+```{r}
+# Taxonomy-Matrix einlesen (auf KIT-Server berechnet: assign_taxonomy_all.R)
+taxonomy_df <- read.csv(file.path(base_path, "Data/Final/Taxonomy/taxonomy_all.csv"))
+# X-Spalte als Zeilenname setzen
+
+rownames(taxonomy_df)<- taxonomy_df$sequence
+
+# Prüfen
+head(rownames(taxonomy_df))  # Sequenzen zeigen
+head(colnames(taxonomy_df))  # Kingdom, Phylum, ... 
+
+# Überblick
+cat("Klassifizierte ASVs gesamt:", nrow(taxonomy_df), "\n\n")
+
+cat("Klassifizierungsrate pro Ebene:\n")
+for (rank in c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")) {
+  n <- sum(!is.na(taxonomy_df[[rank]]))
+  cat(sprintf("  %-10s %4d / %d  (%.1f%%)\n",
+              rank, n, nrow(taxonomy_df), 100 * n / nrow(taxonomy_df)))
+}
+```
+
+## Verteilung der Phyla
+
+```{r}
+taxonomy_df |>
+  filter(!is.na(Phylum)) |>
+  count(Phylum, sort = TRUE) |>
+  mutate(Phylum = fct_reorder(Phylum, n)) |>
+  ggplot(aes(x = n, y = Phylum)) +
+  geom_col(fill = "#2c7bb6") +
+  labs(
+    title = "ASVs pro Phylum",
+    x = "Anzahl ASVs",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Verteilung der Klassen (Top 15)
+
+```{r}
+taxonomy_df |>
+  filter(!is.na(Class)) |>
+  count(Class, sort = TRUE) |>
+  slice_head(n = 15) |>
+  mutate(Class = fct_reorder(Class, n)) |>
+  ggplot(aes(x = n, y = Class)) +
+  geom_col(fill = "#abd9e9") +
+  labs(
+    title = "Top 15 Klassen",
+    x = "Anzahl ASVs",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Vorschau der Ergebnistabelle
+
+```{r}
+taxonomy_df |>
+  select(Kingdom, Phylum, Class, Order, Family, Genus, Species) |>
+  head(20) |>
+  knitr::kable()
+```
+
+## Ergebnisse speichern
+
+```{r}
+output_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis/Data/Final/taxonomy_df_all.csv"
+write.csv(taxonomy_df, output_path, row.names = FALSE)
+cat("Taxonomy gespeichert unter:", output_path, "\n")
+
+```
+
+## ASV-Tabelle mit Taxonomie zusammenführen für Erstellung von phylosec-Datei
+
+```{r}
+# OTU-Tabelle direkt aus seqtab_all
+OTU <- otu_table(t(seqtab_all), taxa_are_rows = TRUE)
+
+# Taxonomie-Tabelle
+taxonomy_df <- read.csv(file.path(base_path, "Data/Final/Taxonomy/taxonomy_all.csv"))
+rownames(taxonomy_df) <- taxonomy_df$sequence
+TAX <- tax_table(as.matrix(taxonomy_df[, c("Kingdom", "Phylum", "Class",
+                                            "Order", "Family", "Genus", "Species")]))
+
+# phyloseq Objekt
+ps <- phyloseq(OTU, TAX)
+
+# ── Sample-Namen bereinigen ───────────────────────────────────────────────────
+clean_names <- rownames(seqtab_all)
+
+# Nur EC24_245 bereinigen
+clean_names <- sub("^ns2024-18-", "", clean_names)
+clean_names <- ifelse(
+  grepl("^ns2024|^EC24", clean_names) & grepl("_S\\d+_L001$", clean_names),
+  sub("_S\\d+_L001$", "", clean_names),
+  clean_names
+)
+clean_names <- gsub("-", "_", clean_names)
+
+# Nur Popa bereinigen
+clean_names <- ifelse(
+  grepl("^Popa", clean_names),
+  sub("_S\\d+_L001$", "", clean_names),
+  clean_names
+)
+
+sample_names(ps) <- clean_names
+
+# Check
+cat("Nicht gefunden:\n")
+print(sample_names(ps)[!sample_names(ps) %in% rownames(metadata)]) # --> Die Negativcontrollen (NC) sind nicht in den Metadaten, alle anderen schon
+```
+
+# Labor-Label und Käferart mergen
+
+```{r}
+# Metadaten mergen
+metadata_filtered <- metadata[rownames(metadata) %in% sample_names(ps), , drop = FALSE]
+cat("Proben mit Metadaten:", nrow(metadata_filtered), "\n")
+
+sample_data(ps) <- sample_data(metadata_filtered)
+View(sample_data(ps))
+# Negativkontrollen entfernen
+ps <- subset_samples(ps, !is.na(beetle_species))
+cat("Proben nach NC-Entfernung:", nsamples(ps), "\n")
+ps
+```
+# Speichern
+
+```{r}
+saveRDS(ps, file.path(base_path, "Data/Final/phyloseq_all.rds"))
+```
+
+

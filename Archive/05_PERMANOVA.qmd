@@ -1,0 +1,312 @@
+---
+title: "Beetle-Fungi Community Analysis"
+subtitle: "Beta-Diversität, PERMANOVA, Fungal Traits, Indicator Species"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+    fig-width: 12
+    fig-height: 7
+execute:
+  warning: false
+  message: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Pakete laden
+
+```{r}
+#| label: packages
+#| message: false
+#| warning: false
+
+library(phyloseq)
+library(vegan)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(microeco)
+library(indicspecies)
+library(pairwiseAdonis)
+library(UpSetR)
+library(reshape2)
+library(ggvenn)
+library(patchwork)
+library(stringr)
+library(ggalluvial)
+
+```
+
+---
+
+## Daten laden
+
+```{r}
+#| label: load-data (filtered!)
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# Phyloseq-Objekt mit FILTER!
+ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v2/ps_filtered.rds"))
+
+# Beetle traits (aus beetle_traits.qmd)
+beetle_traits <- read.csv("~/Master_EnvironmentalSciences/Master_Thesis/Data/Metadata/beetle_traits.csv")
+
+# Fungal traits
+data(fungi_func_FungalTraits)
+
+otu_mat_new <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_f.rds"))
+
+# ── Taxonomie aus phyloseq extrahieren ────────────────────────────────────────
+tax_df <- as.data.frame(tax_table(ps))
+tax_df$sequence <- rownames(tax_df)
+
+# ASV-IDs über asv_map hinzufügen
+asv_map <- data.frame(
+  asv_id   = paste0("ASV", seq_along(taxa_names(ps))),
+  sequence = taxa_names(ps)
+)
+
+cat("Proben:", nsamples(ps), "\n")
+cat("Anzahl ASV nach Filter:  ", ntaxa(ps), "\n")
+cat("Anzahl OTUs nach Filter:", ncol(otu_mat_new), "\n")
+```
+# Setup
+
+```{r}
+# Farben & Reihenfolge (konsistent mit beetle_traits.qmd)
+family_colors <- c(
+  "Carabidae"     = "grey",  # stahlblau
+  "Buprestidae"   = "#C1714F",  # terrakotta
+  "Tenebrionidae" = "#6A9C6A",  # salbeigrün
+  "Cerambycidae"  = "#E0A96D",  # sandgelb
+  "Curculionidae" = "#8C6D9E"   # lavendel
+)
+
+lifestyle_colors <- c(
+  "saprotroph"          = "#E69F00",
+  "plant pathogen"      = "#009E73",
+  "mycoparasite"        = "#CC79A7",
+  "animal parasite"     = "#0072B2",
+  "animal endosymbiont" = "#F0E442",
+  "mold"                = "#D55E00",
+  "others"              = "#999999"
+)
+
+species_order <- c(
+  # Buprestidae – Frischholzbesiedler, xylophag
+  "Anthaxia fulgurans",
+  "Anthaxia quadripunctata",
+  "Chrysobothris affinis",
+  "Buprestis haemorrhoidalis",
+  # Cerambycidae – gemischt
+  "Rhagium bifasciatum",
+  "Rhagium inquisitor",
+  "Rhagium mordax",
+  "Pachytodes cerambyciformis",
+  "Rutpela maculata",
+  "Stenurella melanura",
+  # "Exoten" – je eine Art ihrer Familie, ökologisch sehr verschieden
+  "Bolitophagus reticulatus",   # Pilzfresser
+  "Ips typographus",            # Borkenkäfer
+  "Pterostichus aethiops"       # Räuber
+)
+```
+
+
+
+## PERMANOVA: Käferart, Familie, Traits
+
+```{r}
+#| label: permanova
+
+meta <- as.data.frame(sample_data(ps))
+
+# Beetle traits zu Metadaten hinzufügen
+meta <- meta %>%
+  left_join(beetle_traits[, c("species", "gilde", "nahrung", "wald",
+                         "niche_decay_num", "body_length",
+                         "hairiness_total", "wing_load")],
+            by = c("beetle_species" = "Species_clean"))
+
+# ── PERMANOVA 1: Käferart ────────────────────────────────────────────────────
+perm_species <- adonis2(dist_bc ~ beetle_species, data = meta,
+                        permutations = 999)
+cat("PERMANOVA ~ beetle_species:\n")
+print(perm_species)
+
+# ── PERMANOVA 2: Familie (Phylogenie-Proxy) ───────────────────────────────────
+perm_family <- adonis2(dist_bc ~ family, data = meta,
+                       permutations = 999)
+cat("\nPERMANOVA ~ family:\n")
+print(perm_family)
+
+# ── PERMANOVA 3: Funktionelle Traits ─────────────────────────────────────────
+perm_traits <- adonis2(dist_bc ~ gilde + nahrung + wald +
+                                  niche_decay_num + body_length +
+                                  hairiness_total + wing_load,
+                       data = meta, permutations = 999, na.action = na.omit)
+cat("\nPERMANOVA ~ functional traits:\n")
+print(perm_traits)
+
+# ── PERMANOVA 4: Multifaktoriell (Phylogenie + Traits) ───────────────────────
+perm_multi <- adonis2(dist_bc ~ family + gilde + nahrung + wald +
+                                 niche_decay_num + body_length +
+                                 hairiness_total + wing_load,
+                      data = meta, permutations = 999, na.action = na.omit)
+cat("\nMultifaktorielle PERMANOVA:\n")
+print(perm_multi)
+```
+
+---
+
+## Paarweise PERMANOVA
+
+```{r}
+#| label: pairwise-permanova
+
+pairwise_res <- pairwise.adonis2(dist_bc ~ beetle_species,
+                                  data = meta,
+                                  nperm = 999)
+pairwise_res
+```
+
+---
+
+## Indicator Species
+
+```{r}
+#| label: indicator-species
+
+# OTU presence/absence Matrix (Samples × ASVs)
+otu_pa <- as.data.frame(otu_table(ps))
+otu_pa[otu_pa > 0] <- 1
+otu_pa <- t(otu_pa)  # Samples × ASVs
+
+group <- sample_data(ps)$beetle_species
+
+# Indicator species Analyse
+indval_result <- multipatt(
+  otu_pa,
+  group,
+  func    = "IndVal.g",
+  control = how(nperm = 999)
+)
+
+summary(indval_result, alpha = 0.05)
+
+# Als DataFrame
+indval_df <- as.data.frame(indval_result$sign) %>%
+  rownames_to_column("ASV") %>%
+  filter(p.value <= 0.05)
+
+# Taxonomie hinzufügen
+indval_taxa <- indval_df %>%
+  left_join(tax_df[, c("ASV", "Genus_clean", "Species", "Family")],
+            by = "ASV")
+
+cat("Signifikante Indicator ASVs:", nrow(indval_taxa), "\n")
+head(indval_taxa)
+```
+
+---
+
+## Core Mycobiome
+
+```{r}
+#| label: core-mycobiome
+
+# Core: ASVs die in >= 70% der Proben einer Art vorkommen
+core_per_species <- lapply(species_order, function(sp) {
+  ps_sub <- subset_samples(ps, beetle_species == sp)
+  if (nsamples(ps_sub) < 2) return(NULL)
+
+  otu_sub <- as.matrix(otu_table(ps_sub))
+  prevalence <- rowSums(otu_sub > 0) / nsamples(ps_sub)
+  core_asvs <- names(prevalence[prevalence >= 0.7])
+
+  data.frame(
+    beetle_species = sp,
+    ASV            = core_asvs,
+    prevalence     = prevalence[core_asvs]
+  )
+})
+
+core_df <- bind_rows(core_per_species)
+cat("Core ASVs gesamt:", nrow(core_df), "\n")
+
+core_summary <- core_df %>%
+  dplyr::count(beetle_species) %>%
+  mutate(beetle_species = factor(beetle_species, levels = species_order))
+
+ggplot(core_summary, aes(x = beetle_species, y = n,
+                          fill = beetle_species)) +
+  geom_col() +
+  scale_x_discrete(limits = species_order) +
+  labs(x = NULL, y = "Number of core ASVs",
+       title = "Core mycobiome size per beetle species (prevalence ≥ 70%)") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x  = element_text(angle = 45, hjust = 1, face = "italic"),
+        legend.position = "none")
+
+ggsave(file.path(base_path, "Results/Figures/core_mycobiome.pdf"),
+       width = 10, height = 6)
+```
+
+---
+
+## Overlap zwischen Arten (UpSet + Jaccard)
+
+```{r}
+#| label: overlap
+
+# Liste: Käferart → Core ASVs
+otu_lists <- core_df %>%
+  group_by(beetle_species) %>%
+  summarise(asvs = list(unique(ASV)), .groups = "drop")
+otu_list <- setNames(otu_lists$asvs, otu_lists$beetle_species)
+
+# UpSet Plot
+ups_data <- fromList(otu_list)
+upset(ups_data, nsets = length(otu_list), order.by = "freq",
+      sets.x.label = "Core ASV overlap")
+
+# Jaccard Heatmap
+jacc <- vegdist(t(as.matrix(do.call(rbind,
+  lapply(names(otu_list), function(sp) {
+    all_asvs <- unique(unlist(otu_list))
+    as.integer(all_asvs %in% otu_list[[sp]])
+  })))), method = "jaccard")
+
+rownames(as.matrix(jacc)) <- names(otu_list)
+jac_long <- melt(1 - as.matrix(jacc))
+
+ggplot(jac_long, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "C") +
+  labs(x = NULL, y = NULL, fill = "Jaccard similarity",
+       title = "Core mycobiome overlap between beetle species") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+        axis.text.y = element_text(face = "italic"))
+
+ggsave(file.path(base_path, "Results/Figures/jaccard_heatmap.pdf"),
+       width = 10, height = 8)
+```
+
+---
+
+## Sessioninfo
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```

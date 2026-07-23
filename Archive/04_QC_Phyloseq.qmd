@@ -1,0 +1,318 @@
+---
+title: "Quality Control Phyloseq and Diversity"
+author: ""
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+# Pakete laden
+
+```{r}
+#| label: load-phyloseq
+#| message: false
+#| warning: false
+
+library(phyloseq)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(patchwork)
+
+```
+
+```{r}
+#| label: Define path
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+ps <- readRDS(file.path(base_path, "Data/Final/phyloseq_all.rds"))
+ps
+
+meta_df_clean <- data.frame(sample_data(ps)) %>% rownames_to_column("sample")
+
+
+# Qualitätskontrolle
+cat("Proben:", nsamples(ps), "\n")
+cat("ASVs:  ", ntaxa(ps), "\n")
+summary(sample_sums(ps))
+table(tax_table(ps)[, "Kingdom"])
+
+# Nur Fungi behalten
+ps_fungi <- subset_taxa(ps, Kingdom == "k__Fungi")
+cat("\nFungi ASVs:", ntaxa(ps_fungi), "von", ntaxa(ps), "\n")
+```
+
+# Reads per Sample
+
+```{r}
+#| echo: false
+#| label: Prune Phyloseq
+
+# 1. Reads pro Sample anschauen – gibt es sehr wenige?
+sort(sample_sums(ps))
+
+# 2. Proben mit zu wenig Reads entfernen (z.B. < 1000)
+ps <- prune_samples(sample_sums(ps) >= 1000, ps)
+cat("Proben nach Filterung:", nsamples(ps), "\n")
+
+# 3. Überblick pro Käferart
+sample_data(ps) %>%
+  as.data.frame() %>%
+  dplyr::count(beetle_species)
+```
+# Prepare data for ggplot
+
+```{r}
+#| label: Prepare data for Plots
+
+sample_data(ps)$family <- dplyr::case_when(
+  sample_data(ps)$beetle_species == "Pterostichus_aethiops" ~ "Carabidae",
+  sample_data(ps)$beetle_species %in% c("Anthaxia_fulgurans",
+                                         "Anthaxia_quadripunctata",
+                                         "Chrysobothris_affinis",
+                                         "Buprestis_haemorrhoidalis") ~ "Buprestidae",
+  sample_data(ps)$beetle_species == "Bolitophagus_reticulatus" ~ "Tenebrionidae",
+  sample_data(ps)$beetle_species %in% c("Rhagium_bifasciatum",
+                                         "Rhagium_inquisitor",
+                                         "Rhagium_mordax",
+                                         "Rutpela_maculata",
+                                         "Stenurella_melanura",
+                                         "Pachytodes_cerambyciformis",
+                                         "Grammoptera_ruficornis") ~ "Cerambycidae",
+  sample_data(ps)$beetle_species == "Ips_typographus" ~ "Curculionidae"
+)
+
+# Prüfen
+#View(sample_data(ps))
+table(sample_data(ps)$family)
+
+# Speichern
+saveRDS(ps, file.path(base_path, "Data/Final/phyloseq_all.rds"))
+```
+# Grammoptera entfernen
+
+```{r}
+#Lt Jörn Buse waren diese Käfer zu lange in einer Tüte, sieht man bei NMDS dass sie nicht clustern, evtl. Kontamination
+
+ps <- subset_samples(ps, beetle_species != "Grammoptera_ruficornis")
+ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+
+cat("Proben nach Entfernung:", nsamples(ps), "\n")  # sollte 76 sein
+cat("ASVs nach Entfernung:", ntaxa(ps), "\n")
+
+# Speichern
+saveRDS(ps, file.path(base_path, "Data/Final/phyloseq_all.rds"))
+```
+## Results: Read tracking
+
+```{r}
+metadata <- read.csv(file.path(base_path, "Data/Metadata/metadata_all.csv"))
+metadata %>% filter(beetle_species == "Grammoptera_ruficornis")
+
+# ── Read-Tracking einlesen ────────────────────────────────────────────────────
+runs <- c("EC24_245", "3XX", "Popa", "Buse")
+
+track_all <- lapply(runs, function(run) {
+  df <- read.csv(file.path(base_path, "Data/Final/DADA2_Output", 
+                            run, "read_tracking.csv"))
+  df$run <- run
+  df
+}) %>% bind_rows()
+
+
+# Alle Samples pro Lauf
+table(track_all$run)
+
+# Nur Negativkontrollen
+track_all %>%
+  filter(grepl("NC|negativ|332|333|334", X)) %>%
+  dplyr::count(run)
+
+# Nur echte Proben (ohne NCs)
+track_all %>%
+  filter(!grepl("NC|negativ|332|333|334", X)) %>%
+  dplyr::count(run)
+
+# ── Zusammenfassung pro Lauf ──────────────────────────────────────────────────
+grammoptera_ids <- c("EC24_245_0016_FITS_B04_iA", "EC24_245_0017_FITS_B05_iA",
+                     "EC24_245_0018_FITS_B06_iA", "EC24_245_0019_FITS_B07_iA",
+                     "EC24_245_0020_FITS_B08_iA", "EC24_245_0021_FITS_B09_iA",
+                     "EC24_245_0022_FITS_B10_iA", "EC24_245_0023_FITS_B11_iA")
+
+track_summary <- track_all %>%
+  filter(!grepl("NC|negativ|332|333|334", X)) %>%
+  filter(!gsub("-", "_", gsub("ns2024-18-", "", 
+               gsub("_S\\d+_L001$", "", X))) %in% grammoptera_ids) %>%
+  group_by(run) %>%
+  summarise(
+    n_samples      = n(),
+    reads_input    = sum(Input),
+    reads_filtered = sum(Gefiltert),
+    reads_merged   = sum(Merged),
+    reads_nochim   = sum(Ohne_Chimaeren),
+    pct_retained   = round(reads_nochim / reads_input * 100, 1)
+  )
+
+print(track_summary)
+
+# ── ASVs pro Lauf ─────────────────────────────────────────────────────────────
+asv_counts <- data.frame(
+  run   = c("EC24_245", "3XX", "Popa", "Buse", "Total"),
+  ASVs  = c(1696, 1867, 248, 7307, 10970)
+)
+
+print(asv_counts)
+```
+## Results: Taxonomic Composition
+
+```{r}
+# Taxonomie-Übersicht
+tax_df <- as.data.frame(tax_table(ps))
+
+# Klassifizierungsrate pro Ebene
+for (rank in c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")) {
+  n <- sum(!is.na(tax_df[[rank]]) & tax_df[[rank]] != "")
+  cat(sprintf("%-10s %4d / %d  (%.1f%%)\n",
+              rank, n, nrow(tax_df), 100 * n / nrow(tax_df)))
+}
+
+# Dominant Phyla
+tax_df %>%
+  mutate(Phylum_clean = gsub("p__", "", Phylum)) %>%
+  dplyr::filter(!is.na(Phylum_clean)) %>%
+  dplyr::count(Phylum_clean, sort = TRUE) %>%
+  head(10)
+
+# Dominant Genera
+tax_df %>%
+  mutate(Genus_clean = gsub("g__", "", Genus)) %>%
+  dplyr::filter(!is.na(Genus_clean)) %>%
+  dplyr::count(Genus_clean, sort = TRUE) %>%
+  head(10)
+```
+## Results: Plots
+
+```{r}
+# ── Plot 1: Phylum-Level Barplot ──────────────────────────────────────────────
+phylum_df <- tax_df %>%
+  mutate(Phylum_clean = gsub("p__", "", Phylum)) %>%
+  mutate(Phylum_clean = ifelse(is.na(Phylum_clean) | 
+                               grepl("Incertae_sedis", Phylum_clean),
+                               "Unclassified/Incertae sedis", Phylum_clean)) %>%
+  dplyr::count(Phylum_clean, sort = TRUE) %>%
+  mutate(pct = round(n / sum(n) * 100, 1),
+         Phylum_clean = fct_reorder(Phylum_clean, n))
+
+ggplot(phylum_df, aes(x = n, y = Phylum_clean, fill = Phylum_clean)) +
+  geom_col() +
+  geom_text(aes(label = paste0(pct, "%")), hjust = -0.1, size = 5) +
+  scale_fill_manual(values = c(
+    "Ascomycota"                  = "#D94801",
+    "Basidiomycota"               = "#2171B5",
+    "Unclassified/Incertae sedis" = "#969696",
+    "Mortierellomycota"           = "#74C476",
+    "Mucoromycota"                = "#A1D99B",
+    "Chytridiomycota"             = "#FDD0A2",
+    "Rozellomycota"               = "#FDAE6B",
+    "Basidiobolomycota"           = "#C7E9C0",
+    "Olpidiomycota"               = "#BCBDDC",
+    "Sanchytriomycota"            = "#DADAEB"
+  )) +
+  labs(x = "Number of ASVs", y = NULL,
+       title = "") +
+  xlim(0, max(phylum_df$n) * 1.15) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+
+# Caption: Fungal diversity at phylum level
+
+ggsave(file.path(base_path, "Results/Figures/phylum_barplot.pdf"),
+       width = 9, height = 5)
+```
+
+```{r}
+# ── Plot 2: Top 15 Genera ─────────────────────────────────────────────────────
+genus_df <- tax_df %>%
+  mutate(Genus_clean = gsub("g__", "", Genus)) %>%
+  dplyr::filter(!is.na(Genus_clean) & 
+                !grepl("Incertae_sedis", Genus_clean)) %>%
+  dplyr::count(Genus_clean, sort = TRUE) %>%
+  slice_head(n = 15) %>%
+  mutate(Genus_clean = fct_reorder(Genus_clean, n))
+
+ggplot(genus_df, aes(x = n, y = Genus_clean)) +
+  geom_col(fill = "#2171B5") +
+  geom_text(aes(label = n), hjust = -0.1, size = 3.5) +
+  labs(x = "Number of ASVs", y = NULL,
+       title = "") +
+  xlim(0, max(genus_df$n) * 1.15) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.y = element_text(face = "italic"))
+
+
+# Caption: Top 15 most frequent fungal genera
+
+ggsave(file.path(base_path, "Results/Figures/genus_barplot.pdf"),
+       width = 9, height = 6)
+
+# Plot 1 und 2 zusammenfügen
+
+plot_phylum <- ggplot(phylum_df, aes(x = n, y = Phylum_clean, fill = Phylum_clean)) +
+  geom_col() +
+  geom_text(aes(label = paste0(pct, "%")), hjust = -0.1, size = 5) +
+  scale_fill_manual(values = c(
+    "Ascomycota"                  = "darkgoldenrod2",
+    "Basidiomycota"               = "chocolate3",
+    "Unclassified/Incertae sedis" = "#969696",
+    "Mortierellomycota"           = "#74C476",
+    "Mucoromycota"                = "#A1D99B",
+    "Chytridiomycota"             = "#FDD0A2",
+    "Rozellomycota"               = "#FDAE6B",
+    "Basidiobolomycota"           = "#C7E9C0",
+    "Olpidiomycota"               = "#BCBDDC",
+    "Sanchytriomycota"            = "#DADAEB"
+  )) +
+  labs(x = "Number of ASVs", y = NULL) +
+  xlim(0, max(phylum_df$n) * 1.15) +
+  theme_minimal(base_size = 16) +
+  theme(legend.position = "none")
+
+plot_genus <- ggplot(genus_df, aes(x = n, y = Genus_clean)) +
+  geom_col(fill = "bisque3") +
+  geom_text(aes(label = n), hjust = -0.1, size = 5) +
+  labs(x = "Number of ASVs", y = NULL) +
+  xlim(0, max(genus_df$n) * 1.15) +
+  theme_minimal(base_size = 16) +
+  theme(axis.text.y = element_text(face = "italic"))
+
+combined_tax <- plot_phylum + plot_genus +
+  plot_layout(widths = c(1.4, 1)) +
+  plot_annotation(tag_levels = "A")
+
+combined_tax
+
+ggsave(file.path(base_path, "Results/Figures/taxonomy_combined.pdf"),
+       plot = combined_tax, width = 14, height = 6, bg = "white")
+```
+
+```{r}
+# Wie viele sind wirklich unclassified?
+# Wie viele haben kein Phylum?
+sum(is.na(tax_df$Phylum) | tax_df$Phylum == "")
+
+# Wie viele sind Incertae sedis?
+sum(grepl("Incertae_sedis", tax_df$Phylum), na.rm = TRUE)
+
+# Gesamt unklassifiziert auf Phylum-Ebene
+sum(is.na(tax_df$Phylum) | tax_df$Phylum == "" | 
+    grepl("Incertae_sedis", tax_df$Phylum), na.rm = TRUE)
+```
+

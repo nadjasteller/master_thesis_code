@@ -1,0 +1,408 @@
+---
+title: "Vergleich Labor-Pipeline vs. DADA2-Pipeline"
+author: "Nadja Steller"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+    theme: flatly
+execute:
+  warning: false
+  message: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+## 1) Pakete & Pfade
+
+```{r}
+#| label: setup
+
+library(tidyverse)
+library(phyloseq)
+library(patchwork)
+library(tibble)
+
+path_labor <- "C:/Users/user/Documents/Master_EnvironmentalSciences/NP/New_approach/Daten"
+base_path  <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+```
+
+---
+
+## 2) Labor-Datensatz einlesen & aufbereiten
+
+```{r}
+#| label: load-labor
+
+kaefer <- read.csv2(paste0(path_labor, "/New_Species_Database.Perc.csv"), sep = ";")
+kaefer <- kaefer %>% relocate(c(OTU_ID, cluster_size), .before = NCBI_Accession_ID)
+
+assign_taxonomy <- function(row) {
+  dbs <- c("RDP/UNITE", "BOLD", "NCBI")
+  for (db in dbs) {
+    if (db == "RDP/UNITE") {
+      percent_identity <- as.numeric(row$RDP_Species_Support)
+      grade <- 1
+      species <- row$RDP_Species; genus <- row$RDP_Genus
+      family <- row$RDP_Family;   order <- row$RDP_Order
+      class <- row$RDP_Class;     phylum <- row$RDP_Phylum
+      kingdom <- row$RDP_Kingdom
+    } else if (db == "BOLD") {
+      percent_identity <- as.numeric(row$BOLD_HIT.ID)
+      grade <- as.numeric(row$BOLD_Grade.ID)
+      species <- row$BOLD_Species; genus <- row$BOLD_Genus
+      family <- row$BOLD_Family;   order <- row$BOLD_Order
+      class <- row$BOLD_Class;     phylum <- row$BOLD_Phylum
+      kingdom <- "Fungi"
+    } else if (db == "NCBI") {
+      percent_identity <- as.numeric(row$NCBI_HIT.ID)
+      grade <- as.numeric(row$NCBI_Grade.ID)
+      species <- row$NCBI_Species; genus <- row$NCBI_Genus
+      family <- row$NCBI_Family;   order <- row$NCBI_Order
+      class <- row$NCBI_Class;     phylum <- row$NCBI_Phylum
+      kingdom <- "Fungi"
+    } else { next }
+
+    if (!is.na(percent_identity) && percent_identity >= 0.975 && grade > 0.7)
+      return(c(row$OTU_ID, percent_identity, grade, db,
+               kingdom, phylum, class, order, family, genus, species))
+    if (!is.na(percent_identity) && percent_identity >= 0.95 &&
+        percent_identity < 0.975 && grade > 0.7)
+      return(c(row$OTU_ID, percent_identity, grade, db,
+               kingdom, phylum, class, order, family, genus, ""))
+  }
+  return(c(row$OTU_ID, NA, NA, "No match", "", "", "", "", "", "", ""))
+}
+
+df_cons <- as.data.frame(t(apply(kaefer, 1, function(r) assign_taxonomy(as.list(r)))))
+colnames(df_cons) <- c("OTU_ID", "Percent_identity", "Grade", "db",
+                       "Kingdom", "Phylum", "Class", "Order", "Family", "GENUS", "Species")
+df_cons <- df_cons %>% filter(Kingdom == "Fungi")
+
+SingleReads <- read.csv2(paste0(path_labor, "/New_Sum_reads_per_Species.csv"),
+                         sep = ";", skip = 2)
+SingleReads$sum_reads_per_OTU <- as.numeric(SingleReads$sum_reads_per_OTU)
+Reads <- merge(df_cons, SingleReads, by = "OTU_ID")
+
+beetle_cols_labor <- colnames(Reads)[14:ncol(Reads)]
+
+cat("Labor-Datensatz:\n")
+cat("  OTUs (Fungi):   ", nrow(Reads), "\n")
+cat("  Proben-Spalten: ", length(beetle_cols_labor), "\n")
+cat("  Gesamt-Reads:   ", sum(SingleReads$sum_reads_per_OTU, na.rm = TRUE), "\n")
+```
+
+---
+
+## 3) DADA2-Datensatz einlesen
+
+```{r}
+#| label: load-dada2
+
+# Nur gemeinsame Arten in ps
+shared_species_underscore <- gsub(" ", "_", shared_species)
+
+ps_shared <- subset_samples(ps, beetle_species %in% shared_species_underscore)
+
+cat("DADA2 - nur gemeinsame Arten:\n")
+cat("  Proben:       ", nsamples(ps_shared), "\n")
+cat("  Gesamt-Reads: ", sum(sample_sums(ps_shared)), "\n")
+
+# Labor - nur gemeinsame Arten
+reads_labor_shared <- sum(reads_compare$reads_labor)
+cat("\nLabor - nur gemeinsame Arten:\n")
+cat("  Gesamt-Reads: ", reads_labor_shared, "\n")
+
+cat("\nVerhältnis DADA2/Labor Reads:", 
+    round(sum(sample_sums(ps_shared)) / reads_labor_shared, 2), "\n")
+```
+
+---
+
+## 4) Vergleich: Reads pro Käferart
+
+```{r}
+#| label: compare-reads
+
+# Labor
+reads_labor_long <- Reads %>%
+  pivot_longer(cols = all_of(beetle_cols_labor),
+               names_to = "sample", values_to = "reads") %>%
+  mutate(
+    reads = as.numeric(reads),
+    # Punkte → Unterstriche, dann Nummer am Ende entfernen
+    beetle_species = gsub("\\.", "_", sample),
+    beetle_species = gsub("_\\d+$", "", beetle_species),
+    # abgewaschen_Ips → Ips_typographus
+    beetle_species = gsub("^abgewaschen_Ips$", "Ips_typographus", beetle_species),
+    beetle_species = gsub("^abgewaschen_Stenurella_melanura$", 
+                          "Stenurella_melanura", beetle_species),
+    # Unterstriche → Leerzeichen für Konsistenz mit DADA2
+    beetle_species = gsub("_", " ", beetle_species)
+  ) %>%
+  dplyr::filter(!is.na(reads), reads > 0) %>%
+  dplyr::group_by(beetle_species) %>%
+  dplyr::summarise(reads_labor = sum(reads), .groups = "drop")
+
+unique(reads_labor_long$beetle_species)
+
+# DADA2
+reads_dada2_long <- data.frame(
+  sample      = sample_names(ps),
+  reads_dada2 = sample_sums(ps)
+) %>%
+  left_join(meta_df[, c("sample", "beetle_species")], by = "sample") %>%
+  dplyr::group_by(beetle_species) %>%
+  dplyr::summarise(reads_dada2 = sum(reads_dada2), .groups = "drop") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species))
+
+unique(reads_dada2_long$beetle_species)
+
+# Plot
+# Nur Arten die in BEIDEN Datensätzen vorkommen
+shared_species <- intersect(
+  reads_labor_long$beetle_species,
+  reads_dada2_long$beetle_species
+)
+
+cat("Arten in Labor:", nrow(reads_labor_long), "\n")
+cat("Arten in DADA2:", nrow(reads_dada2_long), "\n")
+cat("Gemeinsame Arten:", length(shared_species), "\n")# Nur 6, weil in DADA2 Grammoptera fehlt
+
+reads_compare <- inner_join(reads_labor_long, reads_dada2_long,
+                             by = "beetle_species")
+
+cat("Gemeinsame Arten:", nrow(reads_compare), "\n")
+print(reads_compare)
+
+# Plot
+reads_compare %>%
+  pivot_longer(cols = c(reads_labor, reads_dada2),
+               names_to = "pipeline", values_to = "reads") %>%
+  mutate(pipeline = recode(pipeline,
+                           "reads_labor" = "Labor",
+                           "reads_dada2" = "DADA2")) %>%
+  ggplot(aes(x = beetle_species, y = reads, fill = pipeline)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("Labor" = "#D94801", "DADA2" = "#2171B5")) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = NULL, y = "Total reads", fill = "Pipeline",
+       title = "Reads pro Käferart: Labor vs. DADA2") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"))
+```
+
+---
+
+## 5) Vergleich: Anzahl OTUs/ASVs pro Käferart
+
+```{r}
+#| label: compare-richness
+
+# ── Labor: OTUs pro Art ───────────────────────────────────────────────────────
+otus_labor <- Reads %>%
+  pivot_longer(cols = all_of(beetle_cols_labor),
+               names_to = "sample", values_to = "reads") %>%
+  mutate(
+    reads = as.numeric(reads),
+    beetle_species = gsub("\\.", "_", sample),
+    beetle_species = gsub("_\\d+$", "", beetle_species),
+    beetle_species = gsub("^abgewaschen_Ips$", "Ips_typographus", beetle_species),
+    beetle_species = gsub("^abgewaschen_Stenurella_melanura$",
+                          "Stenurella_melanura", beetle_species),
+    beetle_species = gsub("_", " ", beetle_species)
+  ) %>%
+  dplyr::filter(!is.na(reads), reads > 0) %>%
+  dplyr::group_by(beetle_species) %>%
+  dplyr::summarise(otus_labor = n_distinct(OTU_ID), .groups = "drop")
+
+# ── DADA2: ASVs pro Art ───────────────────────────────────────────────────────
+otu_mat <- as.matrix(t(otu_table(ps)))
+colnames(otu_mat) <- gsub("^X", "", colnames(otu_mat))
+
+asvs_dada2 <- data.frame(
+  sample     = rownames(otu_mat),
+  asvs_dada2 = rowSums(otu_mat > 0)
+) %>%
+  left_join(meta_df[, c("sample", "beetle_species")], by = "sample") %>%
+  dplyr::group_by(beetle_species) %>%
+  dplyr::summarise(asvs_dada2 = sum(asvs_dada2), .groups = "drop") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species))
+
+# ── Nur gemeinsame Arten ──────────────────────────────────────────────────────
+otus_compare <- inner_join(otus_labor, asvs_dada2, by = "beetle_species")
+
+# Plot
+otus_compare %>%
+  pivot_longer(cols = c(otus_labor, asvs_dada2),
+               names_to = "pipeline", values_to = "n") %>%
+  mutate(pipeline = recode(pipeline,
+                           "otus_labor" = "Labor (OTUs)",
+                           "asvs_dada2" = "DADA2 (ASVs)")) %>%
+  ggplot(aes(x = beetle_species, y = n, fill = pipeline)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("Labor (OTUs)" = "#D94801",
+                                "DADA2 (ASVs)" = "#2171B5")) +
+  labs(x = NULL, y = "Anzahl OTUs/ASVs", fill = "Pipeline",
+       title = "OTU/ASV-Anzahl pro Käferart: Labor vs. DADA2") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"))
+```
+```{r}
+# Wie viele Proben pro Art im Labor?
+Reads %>%
+  pivot_longer(cols = all_of(beetle_cols_labor),
+               names_to = "sample", values_to = "reads") %>%
+  mutate(
+    reads = as.numeric(reads),
+    beetle_species = gsub("\\.", "_", sample),
+    beetle_species = gsub("_\\d+$", "", beetle_species),
+    beetle_species = gsub("^abgewaschen_Ips$", "Ips_typographus", beetle_species),
+    beetle_species = gsub("^abgewaschen_Stenurella_melanura$",
+                          "Stenurella_melanura", beetle_species),
+    beetle_species = gsub("_", " ", beetle_species)
+  ) %>%
+  dplyr::filter(beetle_species %in% shared_species) %>%
+  dplyr::group_by(beetle_species) %>%
+  dplyr::summarise(n_proben = n_distinct(sample),
+                   reads = sum(reads, na.rm = TRUE))
+
+# Reads pro Probe im Labor-Datensatz
+reads_labor_per_sample <- Reads %>%
+  pivot_longer(cols = all_of(beetle_cols_labor),
+               names_to = "sample", values_to = "reads") %>%
+  mutate(
+    reads = as.numeric(reads),
+    beetle_species = gsub("\\.", "_", sample),
+    beetle_species = gsub("_\\d+$", "", beetle_species),
+    beetle_species = gsub("^abgewaschen_Ips$", "Ips_typographus", beetle_species),
+    beetle_species = gsub("^abgewaschen_Stenurella_melanura$",
+                          "Stenurella_melanura", beetle_species),
+    beetle_species = gsub("_", " ", beetle_species)
+  ) %>%
+  dplyr::filter(beetle_species %in% shared_species) %>%
+  dplyr::group_by(sample) %>%
+  dplyr::summarise(reads_labor = sum(reads, na.rm = TRUE), .groups = "drop")
+
+cat("Mittlere Reads pro Probe (Labor):", 
+    round(mean(reads_labor_per_sample$reads_labor), 0), "\n")
+cat("Mittlere Reads pro Probe (DADA2):", 
+    round(mean(sample_sums(ps_shared)), 0), "\n")
+```
+## OTU-Vergleich
+
+```{r}
+
+uc <- read.table(file.path(base_path, "Data/Final/otus.uc"),
+                 sep = "\t", header = FALSE, stringsAsFactors = FALSE)
+
+# Nur Hit-Zeilen (H) und Seed-Zeilen (S) behalten
+uc_hits <- uc[uc$V1 %in% c("H", "S"), c("V1", "V9", "V10")]
+colnames(uc_hits) <- c("type", "asv", "otu")
+
+# Size-Tag entfernen
+uc_hits$asv_clean <- gsub(";size=.*$", "", uc_hits$asv)
+uc_hits$otu_clean <- gsub(";size=.*$", "", uc_hits$otu)
+
+# Für S-Zeilen (Seeds) ist OTU = ASV
+uc_hits$otu_clean[uc_hits$type == "S"] <- uc_hits$asv_clean[uc_hits$type == "S"]
+
+cat("ASVs gemappt:", nrow(uc_hits), "\n")
+cat("OTUs gesamt:", length(unique(uc_hits$otu_clean)), "\n")
+
+# ── Schritt 2: OTU-Tabelle erstellen ──────────────────────────────────────────
+# ASV-Matrix aus phyloseq (Samples × ASVs)
+asv_mat <- as.matrix(t(otu_table(ps)))
+colnames(asv_mat) <- gsub("^X", "", colnames(asv_mat))
+
+# Mapping: Sequenz → OTU-Centroid
+asv_to_otu <- setNames(uc_hits$otu_clean, uc_hits$asv_clean)
+
+# Nur gematchte ASVs
+shared <- intersect(colnames(asv_mat), names(asv_to_otu))
+cat("Matches:", length(shared), "\n") #10833
+
+# OTU-Tabelle durch Summierung
+otu_mat_new <- t(rowsum(t(asv_mat[, shared]),
+                         group = asv_to_otu[shared],
+                         na.rm = TRUE))
+
+cat("OTU-Tabelle:", nrow(otu_mat_new), "Samples ×", ncol(otu_mat_new), "OTUs\n")
+
+
+# OTUs pro Art in DADA2 (nach VSEARCH clustering)
+otus_dada2 <- data.frame(
+  sample     = rownames(otu_mat_new),
+  otus_dada2 = rowSums(otu_mat_new > 0)
+) %>%
+  left_join(meta_df[, c("sample", "beetle_species")], by = "sample") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  dplyr::filter(beetle_species %in% shared_species) %>%
+  dplyr::group_by(beetle_species) %>%
+  dplyr::summarise(otus_dada2 = sum(otus_dada2), .groups = "drop")
+
+# ── Vergleich ─────────────────────────────────────────────────────────────────
+otus_compare <- inner_join(otus_labor, otus_dada2, by = "beetle_species")
+
+print(otus_compare)
+
+# Plot
+otus_compare %>%
+  pivot_longer(cols = c(otus_labor, otus_dada2),
+               names_to = "pipeline", values_to = "n") %>%
+  mutate(pipeline = recode(pipeline,
+                           "otus_labor" = "Labor",
+                           "otus_dada2" = "DADA2 (VSEARCH)")) %>%
+  ggplot(aes(x = beetle_species, y = n, fill = pipeline)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("Labor" = "#D94801",
+                                "DADA2 (VSEARCH)" = "#2171B5")) +
+  labs(x = NULL, y = "Number of OTUs", fill = "Pipeline",
+       title = "OTU-Anzahl pro Käferart: Labor vs. DADA2+VSEARCH") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"))
+```
+
+```{r}
+otus_compare %>%
+  left_join(reads_compare, by = "beetle_species") %>%
+  mutate(
+    reads_per_otu_labor = round(reads_labor / otus_labor, 1),
+    reads_per_otu_dada2 = round(reads_dada2 / otus_dada2, 1)
+  ) %>%
+  select(beetle_species, reads_per_otu_labor, reads_per_otu_dada2)
+```
+
+---
+
+## 6) Übersichtstabelle
+
+```{r}
+#| label: summary-table
+
+summary_table <- inner_join(reads_labor_long, reads_dada2_long, by = "beetle_species") %>%
+  inner_join(otus_labor,  by = "beetle_species") %>%
+  inner_join(otus_dada2,  by = "beetle_species") %>%
+  mutate(
+    ratio_reads = round(reads_dada2 / reads_labor, 2),
+    ratio_otus  = round(otus_dada2  / otus_labor,  2)
+  )
+
+knitr::kable(summary_table,
+             col.names = c("Beetle species", "Reads (Labor)", "Reads (DADA2)",
+                           "OTUs (Labor)", "OTUs (DADA2+VSEARCH)",
+                           "Reads ratio", "OTU ratio"),
+             caption = "Vergleich Labor-Pipeline vs. DADA2+VSEARCH-Pipeline pro Käferart")
+```
+
+---
+
+## 7) Session Info
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```

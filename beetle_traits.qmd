@@ -1,0 +1,449 @@
+---
+title: "Beetle Traits – Übersicht"
+subtitle: "Pilzgemeinschaften auf Käfern | Masterarbeit"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+    fig-width: 12
+    fig-height: 7
+execute:
+  warning: false
+  message: false
+editor_options: 
+  chunk_output_type: console
+---
+
+## 1) Pakete laden
+
+```{r}
+#| label: packages
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+library(ggnewscale)
+
+
+```
+
+## 2) Xylos-Datenbank einlesen & filtern
+
+```{r}
+#| label: load-xylos
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+xylos <- read.csv(file.path(base_path, "/Beetle_traits/Xylos_R.csv"), sep = ";")
+
+my_species <- c(
+  "Pterostichus_aethiops", "Anthaxia_quadripunctata", "Anthaxia_fulgurans",
+  "Chrysobothris_affinis", "Buprestis_haemorrhoidalis", "Bolitophagus_reticulatus",
+  "Rhagium_bifasciatum", "Rhagium_inquisitor", "Rhagium_mordax",
+  "Rutpela_maculata", "Stenurella_melanura", "Pachytodes_cerambyciformis",
+  "Corymbia_rubra", "Grammoptera_ruficornis", "Ips_typographus", "Uleiota_planatus"
+)
+
+# final -> Datenbank-Schreibweise
+synonym_map <- c(
+  "Rutpela_maculata" = "Leptura_maculata",
+  "Corymbia_rubra"   = "Stictoleptura_rubra",
+  "Uleiota_planatus" = "Uleiota_planata"
+)
+
+xylos$species_final <- xylos$species
+for (final_name in names(synonym_map)) {
+  xylos$species_final[xylos$species == synonym_map[final_name]] <- final_name
+}
+
+xylos_filtered <- xylos[xylos$species_final %in% my_species, ]
+xylos_filtered$species <- xylos_filtered$species_final
+
+cat("Arten gefunden:", nrow(xylos_filtered), "von", length(my_species), "\n")
+
+xylos_sel <- xylos_filtered[, c("species", "gilde", "nahrung", "wald",
+                                 "niche_decay", "frischholz")]
+
+setdiff(my_species, xylos_filtered$species)
+```
+
+## 3) Hagge-Datenbank einlesen & mergen
+
+```{r}
+#| label: load-hagge
+
+hagge <- read.csv(file.path(base_path,
+  "Beetle_traits/Hagge DB/Hagge_etal_saproxylic_beetle_morphological_trait_database_20210426.csv"))
+
+# Gleicher Synonym-Lookup wie in Kapitel 2 (final -> Datenbank-Schreibweise)
+# Falls Hagge andere Synonyme als Xylos nutzt, hier anpassen -- Check unten
+hagge$species_final <- hagge$species
+for (final_name in names(synonym_map)) {
+  hagge$species_final[hagge$species == synonym_map[final_name]] <- final_name
+}
+
+hagge_filtered <- hagge[hagge$species_final %in% my_species, ]
+hagge_filtered$species <- hagge_filtered$species_final
+
+cat("Arten in Hagge:", nrow(hagge_filtered), "\n")
+cat("Fehlend:", my_species[!my_species %in% hagge_filtered$species], "\n")
+
+hagge_sel <- hagge_filtered[, c("species", "body_length",
+                                 "hairiness_total", "colour_lightness",
+                                 "wing_load", "mass")]
+
+beetles <- merge(xylos_sel, hagge_sel, by = "species", all.x = TRUE)
+
+# Pterostichus manuell hinzufügen (nicht in Hagge-DB)
+# Ökologische Daten nach Büche (carabidfauna.de)
+pterostichus <- data.frame(
+  species          = "Pterostichus_aethiops",
+  gilde            = "a",
+  nahrung          = "z",
+  wald             = "b",
+  niche_decay      = NA,
+  frischholz       = NA,
+  body_length      = NA,
+  hairiness_total  = NA,
+  colour_lightness = NA,
+  wing_load        = NA,
+  mass             = NA
+)
+
+beetles <- bind_rows(beetles, pterostichus)
+cat("Gesamt:", nrow(beetles), "Arten\n")
+```
+
+---
+
+## 4) Taxonomie & Variablen aufbereiten
+
+```{r}
+#| label: prepare
+
+beetles$species_clean <- gsub("_", " ", beetles$species)
+beetles$niche_decay_num <- as.numeric(gsub(",", ".", beetles$niche_decay))
+
+beetles <- beetles %>%
+  mutate(
+    family = case_when(
+      species == "Pterostichus_aethiops"                ~ "Carabidae",
+      species %in% c("Anthaxia_fulgurans",
+                     "Anthaxia_quadripunctata",
+                     "Chrysobothris_affinis",
+                     "Buprestis_haemorrhoidalis")        ~ "Buprestidae",
+      species == "Bolitophagus_reticulatus"              ~ "Tenebrionidae",
+      species %in% c("Rhagium_bifasciatum",
+                     "Rhagium_inquisitor",
+                     "Rhagium_mordax",
+                     "Rutpela_maculata",
+                     "Stenurella_melanura",
+                     "Pachytodes_cerambyciformis",
+                     "Grammoptera_ruficornis",
+                     "Corymbia_rubra")                   ~ "Cerambycidae",
+      species == "Ips_typographus"                      ~ "Curculionidae",
+      species == "Uleiota_planatus"                     ~ "Silvanidae"
+    ),
+    superfamily = case_when(
+      species == "Pterostichus_aethiops"                ~ "Caraboidea",
+      species %in% c("Anthaxia_fulgurans",
+                     "Anthaxia_quadripunctata",
+                     "Chrysobothris_affinis",
+                     "Buprestis_haemorrhoidalis")        ~ "Buprestoidea",
+      species == "Bolitophagus_reticulatus"              ~ "Tenebrionoidea",
+      species %in% c("Rhagium_bifasciatum",
+                     "Rhagium_inquisitor",
+                     "Rhagium_mordax",
+                     "Rutpela_maculata",
+                     "Stenurella_melanura",
+                     "Pachytodes_cerambyciformis",
+                     "Grammoptera_ruficornis",
+                     "Corymbia_rubra")                   ~ "Chrysomeloidea",
+      species == "Ips_typographus"                      ~ "Curculionoidea",
+      species == "Uleiota_planatus"                     ~ "Cucujoidea"
+    )
+  )
+
+# Gilde als Faktor
+beetles$gilde <- factor(beetles$gilde,
+  levels = c("f", "a", "p", "m", "s"),
+  labels = c("fresh wood", "old wood", "wood fungi", "mould cavity", "special"))
+
+# Nahrung als Faktor (inkl. zoophagous für Pterostichus)
+beetles$nahrung <- factor(beetles$nahrung,
+  levels = c("x", "m", "xm", "d", "z"),
+  labels = c("xylophagous", "mycetophagous", "xylo-mycetophagous",
+             "mixed", "zoophagous"))
+
+# Wald als Faktor
+beetles$wald <- factor(beetles$wald,
+  levels = c("l", "n", "b"),
+  labels = c("deciduous", "coniferous", "both"))
+
+species_order <- c(
+  # Buprestidae – Frischholzbesiedler, xylophag
+  "Anthaxia fulgurans",
+  "Anthaxia quadripunctata",
+  "Chrysobothris affinis",
+  "Buprestis haemorrhoidalis",
+  # Cerambycidae – gemischt
+  "Rhagium bifasciatum",
+  "Rhagium inquisitor",
+  "Rhagium mordax",
+  "Grammoptera ruficornis",
+  "Pachytodes cerambyciformis",
+  "Rutpela maculata",
+  "Stenurella melanura",
+  "Corymbia rubra",
+  # "Exoten" – je eine Art ihrer Familie, ökologisch sehr verschieden
+  "Bolitophagus reticulatus",   # Pilzfresser
+  "Ips typographus",            # Borkenkäfer
+  "Pterostichus aethiops",      # Räuber
+  "Uleiota planatus"            # Rindenkäfer, fungivor
+)
+
+beetles$species_clean <- factor(beetles$species_clean,
+                                 levels = rev(species_order))
+
+beetles[, c("species_clean", "family", "gilde", "nahrung", "wald",
+            "niche_decay_num", "body_length", "hairiness_total")]
+```
+
+## Mykangia/ Flower Visitor
+
+Nach Rücksprache mit Flavius: Mykangien/ Mycetome mit aufnehmen als spezialisierte Strukturen für Käfer-Pilz Assoziationen
+
+```{r}
+mycangia <- data.frame(
+  species  = c("Anthaxia_fulgurans", "Anthaxia_quadripunctata",
+               "Chrysobothris_affinis", "Buprestis_haemorrhoidalis",
+               "Rhagium_bifasciatum", "Rhagium_inquisitor", "Rhagium_mordax",
+               "Pachytodes_cerambyciformis", "Rutpela_maculata",
+               "Stenurella_melanura", "Corymbia_rubra",
+               "Bolitophagus_reticulatus",
+               "Ips_typographus",
+               "Pterostichus_aethiops",
+               "Uleiota_planatus"),
+  mycangia = c("no", "no", "no", "no",   # Buprestidae
+               "yes", "yes", "yes",       # Rhagium: alle drei belegt
+               "yes", "yes", "yes", "yes",       # Für Lepturinae in Buchner, Schomann, Kishigami, 2023 generell bestätigt
+               "no",             # Tenebrionidae
+               "yes",             # Ips
+               "no",
+               "no")             # Carabidae
+)
+
+flower_visitor <- data.frame(
+  species = c("Anthaxia_fulgurans", "Anthaxia_quadripunctata",
+              "Chrysobothris_affinis", "Buprestis_haemorrhoidalis",
+              "Rhagium_bifasciatum", "Rhagium_inquisitor", "Rhagium_mordax",
+              "Pachytodes_cerambyciformis", "Rutpela_maculata",
+              "Stenurella_melanura", "Corymbia_rubra",
+              "Bolitophagus_reticulatus",
+              "Ips_typographus",
+              "Pterostichus_aethiops",
+              "Uleiota_planatus"),
+  flower_visitor = c("yes", "yes", "no", "no",   # Buprestidae
+                     "no", "no", "no",           # Rhagium (kein regelmäßiger Blütenbesuch lt. Klausnitzer)
+                     "yes", "yes", "yes", "yes",         # Lepturinae
+                     "no", "no", "no", "no")            # TE/CU/CA/SI
+)
+
+beetles <- beetles %>%
+  left_join(mycangia,       by = "species") %>%
+  left_join(flower_visitor, by = "species") %>%
+  mutate(mycangia = as.factor(mycangia))
+```
+
+## Family als Spalte
+
+```{r}
+#| label: Family als Spalte
+
+# Familie als extra Spalte einfügen
+beetles_cat <- beetles %>%
+  select(species_clean, family, gilde, nahrung, wald) %>%
+  mutate(
+    across(c(gilde, nahrung, wald), as.character),
+    Family = family
+  ) %>%
+  pivot_longer(-c(species_clean, family),
+               names_to = "trait", values_to = "value") %>%
+  mutate(trait = factor(trait,
+    levels = c("Family", "gilde", "nahrung", "wald"),
+    labels = c("Family", "Guild", "Feeding type", "Forest type"))) %>%
+  print(n=100)
+
+
+```
+
+
+
+
+
+## Combined plot
+
+```{r}
+# ── Daten vorbereiten ─────────────────────────────────────────────────────────
+beetles_plot <- beetles %>%
+  filter(species_clean != "Grammoptera ruficornis") %>%
+  mutate(
+    mycangia      = as.factor(mycangia),
+    species_clean = factor(species_clean,
+                           levels = rev(gsub("_", " ", species_order)))
+  )
+
+beetles_plot %>% select(species, mycangia) %>% print()
+# ── Alle Traits in ein langes Format bringen ──────────────────────────────────
+beetles_cat_long <- beetles_plot %>%
+  select(species_clean, family, gilde, wald, flower_visitor, mycangia) %>%
+  mutate(
+    across(c(gilde, wald), as.character),
+    flower_visitor = as.character(flower_visitor),
+    mycangia        = as.character(mycangia),
+    Family          = as.character(family)
+  ) %>%
+  select(-family) %>%
+  pivot_longer(-species_clean, names_to = "trait", values_to = "value") %>%
+  mutate(trait = factor(trait,
+    levels = c("Family", "gilde", "wald", "flower_visitor", "mycangia"),
+    labels = c("Family", "Guild", "Forest type", "Flower visitor", "Mycangia/Mycetome")))
+
+beetles_num_long <- beetles_plot %>%
+  select(species_clean, body_length, hairiness_total) %>%
+  pivot_longer(-species_clean, names_to = "trait", values_to = "value") %>%
+  mutate(
+    value = as.numeric(value),
+    trait = factor(trait,
+      levels = c("body_length", "hairiness_total"),
+      labels = c("Length", "Hairiness"))
+  ) %>%
+  group_by(trait) %>%
+  mutate(value_scaled = (value - min(value, na.rm = TRUE)) /
+                        (max(value, na.rm = TRUE) - min(value, na.rm = TRUE))) %>%
+  ungroup()
+
+# ── Gemeinsame Trait-Reihenfolge für das durchgehende Raster ──────────────────
+all_trait_levels <- c("Family", "Guild", "Forest type", "Flower visitor",
+                       "Length", "Hairiness", "Mycangia/Mycetome")
+
+beetles_cat_long <- beetles_cat_long %>% mutate(trait = factor(trait, levels = all_trait_levels))
+beetles_num_long <- beetles_num_long %>% mutate(trait = factor(trait, levels = all_trait_levels))
+
+```
+
+```{r}
+beetles_num_long <- beetles_plot %>%
+  select(species_clean, body_length, hairiness_total) %>%
+  pivot_longer(-species_clean, names_to = "trait", values_to = "value") %>%
+  mutate(
+    value = as.numeric(value),
+    trait = factor(trait,
+      levels = c("body_length", "hairiness_total"),
+      labels = c("Length", "Hairiness"))
+  ) %>%
+  group_by(trait) %>%
+  mutate(value_scaled = (value - min(value, na.rm = TRUE)) /
+                        (max(value, na.rm = TRUE) - min(value, na.rm = TRUE))) %>%
+  ungroup()
+
+all_trait_levels <- c("Family", "Guild", "Forest type", "Flower visitor",
+                       "Length", "Hairiness", "Mycangia/Mycetome")
+
+beetles_cat_long <- beetles_cat_long %>% mutate(trait = factor(trait, levels = all_trait_levels))
+beetles_num_long <- beetles_num_long %>% mutate(trait = factor(trait, levels = all_trait_levels))
+
+
+```
+```{r}
+# ── Gruppen-Zuordnung für die Hintergrund-Markierung ──────────────────────────
+trait_groups <- data.frame(
+  trait = factor(c("Family", "Guild", "Forest type", "Flower visitor",
+                    "Length", "Hairiness", "Mycangia/Mycetome"),
+                 levels = all_trait_levels),
+  group = c("Phylogeny", "Ecological", "Ecological", "Ecological",
+            "Morphological", "Morphological", "Morphological")
+)
+
+group_colors <- c(
+  "Phylogeny"     = "#E8E4F0",
+  "Ecological"    = "#E0F0E8",
+  "Morphological" = "#F0E8E0"
+)
+
+beetles_cat_long %>% print(n=100)
+
+combined <- ggplot() +
+  geom_tile(data = dplyr::filter(beetles_cat_long, trait == "Family"),
+            aes(x = trait, y = species_clean, fill = value),
+            color = "white", linewidth = 0.5, width = 0.95, height = 0.9) +
+  geom_text(data = dplyr::filter(beetles_cat_long, trait == "Family"),
+            aes(x = trait, y = species_clean, label = value),
+            size = 5, color = "black", na.rm = TRUE) +
+scale_fill_manual(values = c(
+  "Buprestidae"   = "grey",
+  "Cerambycidae"  = "grey",
+  "Tenebrionidae" = "grey",
+  "Curculionidae" = "grey",
+  "Carabidae"     = "grey",
+  "Silvanidae"    = "grey"
+), na.value = "grey95") +
+  ggnewscale::new_scale_fill() +
+  # Layer 2: Ecological traits (Guild, Forest type, Flower visitor) -- Grün
+  geom_tile(data = dplyr::filter(beetles_cat_long, trait %in% c("Guild", "Forest type", "Flower visitor")),
+            aes(x = trait, y = species_clean, fill = value),
+            color = "white", linewidth = 0.5, width = 0.95, height = 0.9) +
+  geom_text(data = dplyr::filter(beetles_cat_long, trait %in% c("Guild", "Forest type", "Flower visitor")),
+            aes(x = trait, y = species_clean, label = value),
+            size = 5, na.rm = TRUE) +
+  scale_fill_manual(values = c(
+    "fresh wood" = "#E5F5E0", "old wood" = "#A1D99B", "wood fungi" = "#31A354",
+    "deciduous"  = "#E5F5E0", "coniferous" = "#A1D99B", "both" = "#31A354",
+    "yes"        = "#31A354", "no" = "#E5F5E0"
+  ), na.value = "grey95") +
+  ggnewscale::new_scale_fill() +
+  # Layer 3: Mycangia (gehört zu Morpho, aber kategorial) -- Blau wie Layer 4
+  geom_tile(data = dplyr::filter(beetles_cat_long, trait == "Mycangia/Mycetome"),
+            aes(x = trait, y = species_clean, fill = value),
+            color = "white", linewidth = 0.5, width = 0.95, height = 0.9) +
+  geom_text(data = dplyr::filter(beetles_cat_long, trait == "Mycangia/Mycetome"),
+            aes(x = trait, y = species_clean, label = value),
+            size = 5, na.rm = TRUE) +
+  scale_fill_manual(values = c("yes" = "#2171B5", "no" = "#DEEBF7"), na.value = "grey95") +
+  ggnewscale::new_scale_fill() +
+  # Layer 4: numerische Morphologie-Traits (Length, Hairiness) -- Blau
+  geom_tile(data = beetles_num_long,
+            aes(x = trait, y = species_clean, fill = value_scaled),
+            color = "white", linewidth = 0.5, width = 0.95, height = 0.9) +
+  geom_text(data = beetles_num_long,
+            aes(x = trait, y = species_clean, label = round(value, 1)),
+            size = 5, na.rm = TRUE) +
+  scale_fill_gradient(low = "#DEEBF7", high = "#2171B5", na.value = "grey95") +
+  scale_x_discrete(expand = c(0.03, 0.03), drop = FALSE, position = "top") +
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(
+    axis.text.y     = element_text(face = "italic", size = 18),
+    axis.text.x     = element_text(face = "bold", size = 15, angle = 0),
+    panel.grid      = element_blank(),
+    legend.position = "none",
+    panel.spacing   = unit(0.3, "lines")
+  )
+
+combined
+
+ggsave(file.path(base_path, "Results/Figures/beetle_traits_combined.pdf"),
+       plot = combined, width = 18, height = 7)
+```
+
+# Speichern
+
+```{r}
+output_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis/Data/Metadata/beetle_traits.csv"
+write.csv(beetles, output_path, row.names = FALSE)
+cat("Beetle traits gespeichert unter:", output_path, "\n")
+```

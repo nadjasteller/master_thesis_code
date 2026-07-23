@@ -1,0 +1,594 @@
+---
+title: "Discussion Analyses"
+format: html
+editor: visual
+---
+
+# 0) Setup: Pakete & Daten laden
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+library(phyloseq)
+library(vegan)
+library(tidyverse)
+library(microeco)
+library(igraph)
+library(edgebundleR)
+library(htmlwidgets)
+
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# ── phyloseq-Objekt laden (identisch zu 08_lifestyle_network_v3.qmd) ────────
+ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v3/ps_filtered.rds"))
+
+otu_ps <- as.data.frame(otu_table(ps))
+if (!taxa_are_rows(ps)) {
+  otu_ps <- as.data.frame(t(otu_ps))
+}
+
+meta_df <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("sample") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  rename(family = family.x) %>%
+  select(-family.y)
+
+meta_family <- meta_df %>% select(sample, family, beetle_species)
+
+cat("Proben:", nsamples(ps), "\n")
+cat("ASVs nach Filter:", ntaxa(ps), "\n")
+
+# ── Taxonomie (sequence-Spalte direkt ergänzt, wie im Original) ────────────
+tax_df <- as.data.frame(tax_table(ps))
+tax_df$sequence      <- rownames(tax_df)
+tax_df$Genus_clean   <- gsub("g__", "", tax_df$Genus)
+tax_df$Species_clean <- gsub("s__", "", tax_df$Species)
+
+# ── FungalTraits laden & mit Taxonomie mergen (identisch zu Skript 08) ─────
+data(fungi_func_FungalTraits)
+
+tax_traits <- merge(tax_df, fungi_func_FungalTraits,
+                    by.x = "Genus_clean", by.y = "GENUS",
+                    all.x = TRUE)
+
+tax_traits$lifestyle_group <- case_when(
+  tax_traits$primary_lifestyle %in% c("soil_saprotroph", "litter_saprotroph",
+                                       "wood_saprotroph", "unspecified_saprotroph",
+                                       "dung_saprotroph", "pollen_saprotroph",
+                                       "nectar/tap_saprotroph")         ~ "saprotroph",
+  tax_traits$primary_lifestyle == "plant_pathogen"                      ~ "plant pathogen",
+  tax_traits$primary_lifestyle %in% c("animal_parasite",
+                                       "protistan_parasite")            ~ "animal parasite",
+  tax_traits$primary_lifestyle == "animal_endosymbiont"                 ~ "animal endosymbiont",
+  tax_traits$primary_lifestyle %in% c("lichen_parasite", "sooty_mold") ~ "mold",
+  tax_traits$primary_lifestyle == "mycoparasite"                        ~ "mycoparasite",
+  TRUE                                                                   ~ "others"
+)
+tax_traits$lifestyle_group[is.na(tax_traits$lifestyle_group)] <- "others"
+
+animal_seqs <- tax_traits$sequence[
+  grepl("arthropod|animal|invertebrate",
+        tax_traits$Animal_biotrophic_capacity_template,
+        ignore.case = TRUE) &
+  !is.na(tax_traits$Animal_biotrophic_capacity_template) &
+  tax_traits$Animal_biotrophic_capacity_template != ""
+]
+cat("Animal-associated ASVs:", length(animal_seqs), "\n")
+
+tax_traits_dedup_ps <- tax_traits %>%
+  distinct(sequence, .keep_all = TRUE) %>%
+  mutate(is_animal = sequence %in% animal_seqs,
+         group     = ifelse(is_animal, "animal-associated", "opportunistic"))
+
+tax_traits_unique_ps <- tax_traits %>%
+  distinct(sequence, .keep_all = TRUE)
+
+# ── Reads im Long-Format, mit Taxonomie + Metadaten gejoint ─────────────────
+asv_family_long <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(meta_family, by = "sample") %>%
+  left_join(tax_df, by = "sequence")
+
+# ── Lifestyle-Long: direkt aus tax_traits statt CSV ─────────────────────────
+lifestyle_long <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(tax_traits_unique_ps %>% select(sequence, lifestyle_group), by = "sequence") %>%
+  left_join(meta_family, by = "sample")
+
+# ── Farbpalette & Reihenfolge ────────────────────────────────────────────────
+family_colors <- c(
+  "Buprestidae"   = "#993C1D",
+  "Cerambycidae"  = "#0F6E56",
+  "Tenebrionidae" = "#D4537E",
+  "Curculionidae" = "#3C3489",
+  "Carabidae"     = "#888780"
+)
+
+species_order <- c(
+  "Anthaxia fulgurans", "Anthaxia quadripunctata",
+  "Chrysobothris affinis", "Buprestis haemorrhoidalis",
+  "Rhagium bifasciatum", "Rhagium inquisitor", "Rhagium mordax",
+  "Pachytodes cerambyciformis", "Rutpela maculata", "Stenurella melanura",
+  "Bolitophagus reticulatus",
+  "Ips typographus",
+  "Pterostichus aethiops"
+)
+
+species_to_family <- c(
+  "Anthaxia fulgurans"          = "Buprestidae",
+  "Anthaxia quadripunctata"     = "Buprestidae",
+  "Chrysobothris affinis"       = "Buprestidae",
+  "Buprestis haemorrhoidalis"   = "Buprestidae",
+  "Rhagium bifasciatum"         = "Cerambycidae",
+  "Rhagium inquisitor"          = "Cerambycidae",
+  "Rhagium mordax"              = "Cerambycidae",
+  "Pachytodes cerambyciformis"  = "Cerambycidae",
+  "Rutpela maculata"            = "Cerambycidae",
+  "Stenurella melanura"         = "Cerambycidae",
+  "Bolitophagus reticulatus"    = "Tenebrionidae",
+  "Ips typographus"             = "Curculionidae",
+  "Pterostichus aethiops"       = "Carabidae"
+)
+```
+
+------------------------------------------------------------------------
+
+# 1) Lifestyles - Vergleich mit Mohammed
+
+```{r}
+#| label: lifestyles-mohammed
+
+target_genera <- c("Kuraishia", "Ogataea", "Aspergillus", "Rhodotorula", "Candida", "Trichoderma")
+
+tax_df %>%
+  filter(Genus_clean %in% target_genera) %>%
+  count(Genus_clean, name = "n_asv") %>%
+  arrange(desc(n_asv))
+
+minor_genera_df <- asv_family_long %>%
+  filter(Genus_clean %in% target_genera) %>%
+  distinct(sequence, Genus_clean, family, beetle_species) %>%
+  count(Genus_clean, beetle_species, family, name = "n_asv") %>%
+  arrange(Genus_clean, desc(n_asv))
+
+print(minor_genera_df, n = Inf)
+```
+
+------------------------------------------------------------------------
+
+# 2) Animal parasites
+
+```{r}
+#| label: animal-parasites
+
+animal_parasite_df <- lifestyle_long %>%
+  group_by(beetle_species, family) %>%
+  mutate(total = sum(reads)) %>%
+  group_by(beetle_species, family, lifestyle_group) %>%
+  summarise(rel = sum(reads) / first(total), .groups = "drop") %>%
+  filter(lifestyle_group == "animal parasite") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  arrange(desc(rel))
+
+cat("=== Animal parasite Anteil pro Käferart (read-based) ===\n")
+print(animal_parasite_df, n = Inf)
+
+animal_parasite_pa_df <- lifestyle_long %>%
+  mutate(reads = 1) %>%
+  group_by(beetle_species, family) %>%
+  mutate(total = sum(reads)) %>%
+  group_by(beetle_species, family, lifestyle_group) %>%
+  summarise(rel = sum(reads) / first(total), .groups = "drop") %>%
+  filter(lifestyle_group == "animal parasite") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  arrange(desc(rel))
+
+cat("\n=== Animal parasite Anteil pro Käferart (P/A-based) ===\n")
+print(animal_parasite_pa_df, n = Inf)
+
+animal_parasite_taxa_df <- lifestyle_long %>%
+  filter(lifestyle_group == "animal parasite") %>%
+  left_join(
+    tax_df %>% select(sequence, Genus_clean, Species_clean),
+    by = "sequence"
+  ) %>%
+  distinct(sequence, beetle_species, family, Genus_clean, Species_clean) %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species),
+         taxon_label = ifelse(Species_clean != "" & !is.na(Species_clean),
+                               paste(Genus_clean, Species_clean),
+                               paste(Genus_clean, "sp."))) %>%
+  count(beetle_species, family, taxon_label, name = "n_asv") %>%
+  arrange(beetle_species, desc(n_asv))
+
+cat("=== Animal-parasite-Taxa pro Käferart ===\n")
+print(animal_parasite_taxa_df, n = Inf)
+
+animal_parasite_specificity <- animal_parasite_taxa_df %>%
+  group_by(taxon_label) %>%
+  summarise(
+    n_species_total = n_distinct(beetle_species),
+    n_families_total = n_distinct(family),
+    species_list = paste(unique(beetle_species), collapse = ", "),
+    total_asvs = sum(n_asv),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_species_total))
+
+cat("=== Verteilung der Animal-parasite-Taxa über Käferarten/Familien ===\n")
+print(animal_parasite_specificity, n = Inf)
+
+cat("\n=== Zusammenfassung ===\n")
+cat("Taxa, die nur bei EINER Art vorkommen (wirtsspezifisch):",
+    sum(animal_parasite_specificity$n_species_total == 1), "von",
+    nrow(animal_parasite_specificity), "\n")
+cat("Taxa, die bei MEHREREN Arten vorkommen (geteilt/generalistisch):",
+    sum(animal_parasite_specificity$n_species_total > 1), "von",
+    nrow(animal_parasite_specificity), "\n")
+cat("Taxa, die über MEHRERE FAMILIEN verteilt sind:",
+    sum(animal_parasite_specificity$n_families_total > 1), "von",
+    nrow(animal_parasite_specificity), "\n")
+
+# ── Genera, die ausschließlich bei Pterostichus aethiops vorkommen ──────────
+pterostichus_genera <- animal_parasite_taxa_df %>%
+  filter(beetle_species == "Pterostichus aethiops") %>%
+  mutate(Genus = word(taxon_label, 1)) %>%
+  distinct(Genus) %>%
+  pull(Genus)
+
+other_genera <- animal_parasite_taxa_df %>%
+  filter(beetle_species != "Pterostichus aethiops") %>%
+  mutate(Genus = word(taxon_label, 1)) %>%
+  distinct(Genus) %>%
+  pull(Genus)
+
+exclusive_to_pterostichus <- setdiff(pterostichus_genera, other_genera)
+shared_with_others        <- intersect(pterostichus_genera, other_genera)
+exclusive_to_others        <- setdiff(other_genera, pterostichus_genera)
+
+cat("=== Genera NUR bei Pterostichus aethiops ===\n")
+print(exclusive_to_pterostichus)
+
+cat("\n=== Genera geteilt (Pterostichus + mind. 1 andere Art) ===\n")
+print(shared_with_others)
+
+cat("\n=== Genera NUR bei anderen Arten ===\n")
+print(exclusive_to_others)
+```
+
+------------------------------------------------------------------------
+
+# 3) Bolitophagus: AA-Anteil
+
+```{r}
+#| label: bolitophagus-aa
+
+tax_traits %>%
+  filter(Genus_clean %in% c("Suhomyces", "Komagataella")) %>%
+  count(Genus_clean, Animal_biotrophic_capacity_template, sort = TRUE) %>%
+  print()
+
+bolitophagus_aa_genera <- asv_family_long %>%
+  filter(beetle_species == "Bolitophagus_reticulatus") %>%
+  left_join(
+    tax_traits %>% select(sequence, Animal_biotrophic_capacity_template),
+    by = "sequence"
+  ) %>%
+  filter(grepl("arthropod|animal|invertebrate", Animal_biotrophic_capacity_template, ignore.case = TRUE)) %>%
+  distinct(sequence, Genus_clean) %>%
+  count(Genus_clean, sort = TRUE)
+
+cat("=== Welche Genera tragen zum AA-Anteil bei Bolitophagus bei? ===\n")
+print(bolitophagus_aa_genera, n = Inf)
+
+bolitophagus_samples <- meta_family %>%
+  filter(beetle_species == "Bolitophagus_reticulatus") %>%
+  pull(sample)
+
+n_bolitophagus_samples <- length(bolitophagus_samples)
+cat("Anzahl Bolitophagus-Proben insgesamt:", n_bolitophagus_samples, "\n\n")
+
+komagataella_suhomyces_prevalence <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(sample %in% bolitophagus_samples, reads > 0) %>%
+  left_join(tax_df %>% select(sequence, Genus_clean), by = "sequence") %>%
+  filter(Genus_clean %in% c("Komagataella", "Suhomyces")) %>%
+  distinct(sample, Genus_clean) %>%
+  count(Genus_clean, name = "n_samples_present") %>%
+  mutate(pct_samples = round(n_samples_present / n_bolitophagus_samples * 100, 1))
+
+cat("=== Prävalenz von Komagataella/Suhomyces über Bolitophagus-Proben ===\n")
+print(komagataella_suhomyces_prevalence)
+```
+
+------------------------------------------------------------------------
+
+# 4) Mycetome-assoziierte Pilze (Lepturinae): Hyphopichia & Scheffersomyces
+
+```{r}
+#| label: mycetome-lepturinae
+
+target_genera <- c("Scheffersomyces", "Hyphopichia")
+
+tax_df %>%
+  filter(Genus_clean %in% target_genera) %>%
+  count(Genus_clean, name = "n_asv") %>%
+  arrange(desc(n_asv))
+
+minor_genera_df <- asv_family_long %>%
+  filter(Genus_clean %in% target_genera) %>%
+  distinct(sequence, Genus_clean, family, beetle_species) %>%
+  count(Genus_clean, beetle_species, family, name = "n_asv") %>%
+  arrange(Genus_clean, desc(n_asv))
+
+print(minor_genera_df, n = Inf)
+
+species_level_df <- asv_family_long %>%
+  filter(Genus_clean %in% target_genera) %>%
+  distinct(sequence, Genus_clean, Species_clean, family, beetle_species) %>%
+  count(Genus_clean, Species_clean, beetle_species, family, name = "n_asv") %>%
+  arrange(Genus_clean, Species_clean, desc(n_asv))
+
+cat("=== Hyphopichia/Scheffersomyces auf Art-Ebene ===\n")
+print(species_level_df, n = Inf)
+
+target_reads_df <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(meta_family, by = "sample") %>%
+  left_join(tax_df %>% select(sequence, Genus_clean), by = "sequence") %>%
+  mutate(is_target = Genus_clean %in% target_genera) %>%
+  group_by(beetle_species, family) %>%
+  mutate(total = sum(reads)) %>%
+  group_by(beetle_species, family, is_target) %>%
+  summarise(rel = sum(reads) / first(total), .groups = "drop") %>%
+  filter(is_target) %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  arrange(desc(rel))
+
+cat("\n=== Relative Read-Abundanz Hyphopichia+Scheffersomyces pro Art ===\n")
+print(target_reads_df, n = Inf)
+
+target_species_df <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(meta_family, by = "sample") %>%
+  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+  filter(Genus_clean == "Hyphopichia" & Species_clean == "rhagii" |
+         Genus_clean == "Scheffersomyces" & Species_clean == "ergatensis") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  group_by(Genus_clean, Species_clean, beetle_species, family) %>%
+  summarise(n_reads = sum(reads), n_asvs = n_distinct(sequence), .groups = "drop") %>%
+  arrange(Genus_clean, desc(n_reads))
+
+cat("=== Reads für Hyphopichia rhagii & Scheffersomyces ergatensis pro Käferart ===\n")
+print(target_species_df, n = Inf)
+
+target_species_rel <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(meta_family, by = "sample") %>%
+  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+  mutate(is_target = (Genus_clean == "Hyphopichia" & Species_clean == "rhagii") |
+                     (Genus_clean == "Scheffersomyces" & Species_clean == "ergatensis"),
+         target_label = case_when(
+           Genus_clean == "Hyphopichia" & Species_clean == "rhagii" ~ "H. rhagii",
+           Genus_clean == "Scheffersomyces" & Species_clean == "ergatensis" ~ "S. ergatensis",
+           TRUE ~ NA_character_
+         )) %>%
+  group_by(beetle_species, family) %>%
+  mutate(total = sum(reads)) %>%
+  filter(is_target) %>%
+  group_by(beetle_species, family, target_label) %>%
+  summarise(rel_pct = round(sum(reads) / first(total) * 100, 2), .groups = "drop") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  arrange(target_label, desc(rel_pct))
+
+cat("\n=== Relativer Anteil (%) am Gesamt-Mykobiom pro Käferart ===\n")
+print(target_species_rel, n = Inf)
+
+total_reads_per_species <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(meta_family, by = "sample") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  group_by(beetle_species, family) %>%
+  summarise(total_reads = sum(reads), .groups = "drop")
+
+target_absolute <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(meta_family, by = "sample") %>%
+  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+  filter(Genus_clean == "Hyphopichia" & Species_clean == "rhagii" |
+         Genus_clean == "Scheffersomyces" & Species_clean == "ergatensis") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species),
+         target_label = paste(substr(Genus_clean, 1, 1), Species_clean)) %>%
+  group_by(target_label, beetle_species, family) %>%
+  summarise(n_reads = sum(reads), .groups = "drop") %>%
+  left_join(total_reads_per_species, by = c("beetle_species", "family")) %>%
+  mutate(pct = round(n_reads / total_reads * 100, 3)) %>%
+  arrange(target_label, desc(n_reads))
+
+cat("=== Absolute Reads vs. Gesamt-Reads pro Käferart ===\n")
+print(target_absolute, n = Inf)
+```
+
+------------------------------------------------------------------------
+
+# 5) Chrysobothris affinis und Prosthemium
+
+```{r}
+#| label: chrysobothris-prosthemium
+
+prosthemium_species_df <- asv_family_long %>%
+  filter(Genus_clean == "Prosthemium") %>%
+  distinct(sequence, Species_clean, beetle_species, family) %>%
+  count(Species_clean, beetle_species, family, name = "n_asv") %>%
+  arrange(desc(n_asv))
+
+cat("=== Prosthemium-Arten pro Käferart ===\n")
+print(prosthemium_species_df, n = Inf)
+
+prosthemium_reads_df <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(meta_family, by = "sample") %>%
+  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+  filter(Genus_clean == "Prosthemium") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  group_by(Species_clean, beetle_species, family) %>%
+  summarise(n_reads = sum(reads), .groups = "drop") %>%
+  arrange(desc(n_reads))
+
+cat("\n=== Prosthemium: absolute Reads pro Art/Käferart ===\n")
+print(prosthemium_reads_df, n = Inf)
+
+tax_traits %>%
+  filter(Genus_clean == "Prosthemium") %>%
+  distinct(Species_clean, primary_lifestyle, lifestyle_group, Animal_biotrophic_capacity_template) %>%
+  print()
+
+chrysobothris_samples <- meta_family %>%
+  filter(beetle_species == "Chrysobothris_affinis") %>%
+  pull(sample)
+
+n_chrysobothris_samples <- length(chrysobothris_samples)
+cat("Anzahl Chrysobothris-affinis-Proben insgesamt:", n_chrysobothris_samples, "\n\n")
+
+prosthemium_prevalence <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(sample %in% chrysobothris_samples, reads > 0) %>%
+  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+  filter(Genus_clean == "Prosthemium" & Species_clean == "intermedium") %>%
+  distinct(sample) %>%
+  nrow()
+
+cat("Prosthemium intermedium nachgewiesen in", prosthemium_prevalence, "von",
+    n_chrysobothris_samples, "Chrysobothris-affinis-Proben (",
+    round(prosthemium_prevalence / n_chrysobothris_samples * 100, 1), "%)\n")
+```
+
+------------------------------------------------------------------------
+
+# 6) Dioszegia in Cerambycidae
+
+```{r}
+#| label: dioszegia-cerambycidae
+
+dioszegia_species_df <- asv_family_long %>%
+  filter(Genus_clean == "Dioszegia", family == "Cerambycidae") %>%
+  distinct(sequence, Species_clean, beetle_species) %>%
+  count(Species_clean, beetle_species, name = "n_asv") %>%
+  arrange(Species_clean, desc(n_asv))
+
+cat("=== Dioszegia-Arten innerhalb Cerambycidae, nach Käferart ===\n")
+print(dioszegia_species_df, n = Inf)
+
+dioszegia_shared <- asv_family_long %>%
+  filter(Genus_clean == "Dioszegia", family == "Cerambycidae") %>%
+  distinct(sequence, Species_clean, beetle_species) %>%
+  group_by(Species_clean) %>%
+  summarise(n_species_sharing = n_distinct(beetle_species),
+            species_list = paste(unique(beetle_species), collapse = ", "),
+            .groups = "drop") %>%
+  arrange(desc(n_species_sharing))
+
+cat("\n=== Welche Dioszegia-Arten werden zwischen mehreren Cerambycidae-Arten geteilt? ===\n")
+print(dioszegia_shared, n = Inf)
+
+tax_traits %>% filter(Genus_clean == "Ciliophora")
+```
+
+------------------------------------------------------------------------
+
+# 7) Edge-Bundle-Netzwerk: Käfer ↔ Pilzgattungen
+
+```{r}
+#| label: edge-bundle-network
+#| fig-width: 15
+#| fig-height: 15
+
+top_n_genera <- 100
+
+edges <- asv_family_long %>%
+  filter(Genus_clean != "", !is.na(Genus_clean)) %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  group_by(beetle_species, Genus_clean) %>%
+  summarise(total_reads = sum(reads), .groups = "drop") %>%
+  filter(total_reads > 0)
+
+top_genera <- edges %>%
+  group_by(Genus_clean) %>%
+  summarise(sum_reads = sum(total_reads), .groups = "drop") %>%
+  arrange(desc(sum_reads)) %>%
+  slice_head(n = top_n_genera) %>%
+  pull(Genus_clean)
+
+edges_top <- edges %>% filter(Genus_clean %in% top_genera)
+
+beetle_nodes <- data.frame(
+  ID    = unique(edges_top$beetle_species),
+  Type  = "Beetle",
+  Reads = sapply(unique(edges_top$beetle_species), function(sp) {
+    sum(edges_top$total_reads[edges_top$beetle_species == sp])
+  })
+) %>%
+  mutate(Family = species_to_family[ID])
+
+fungus_nodes <- data.frame(
+  ID    = unique(edges_top$Genus_clean),
+  Type  = "Fungus",
+  Reads = sapply(unique(edges_top$Genus_clean), function(g) {
+    sum(edges_top$total_reads[edges_top$Genus_clean == g])
+  })
+) %>%
+  mutate(Family = NA_character_)
+
+nodes <- bind_rows(beetle_nodes, fungus_nodes) %>%
+  distinct(ID, .keep_all = TRUE)
+
+rel <- edges_top %>% select(beetle_species, Genus_clean, total_reads)
+colnames(rel) <- c("from", "to", "weight")
+
+g <- graph_from_data_frame(rel, vertices = nodes, directed = FALSE)
+
+V(g)$color <- ifelse(
+  V(g)$Type == "Beetle",
+  family_colors[V(g)$Family],
+  "tan3"
+)
+V(g)$color[is.na(V(g)$color)] <- "grey60"
+
+V(g)$size   <- log1p(V(g)$Reads) * 3
+E(g)$weight <- log1p(E(g)$weight)
+
+edge <- edgebundle(g, tension = 0.9, padding = 150, width = 1200, fontsize = 20)
+
+saveWidget(edge, file.path(base_path, "Results/Figures/beetle_fungus_edgebundle.html"))
+browseURL(file.path(base_path, "Results/Figures/beetle_fungus_edgebundle.html"))
+```

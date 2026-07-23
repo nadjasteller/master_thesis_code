@@ -1,0 +1,203 @@
+---
+title: "03_build_phyloseq_v3"
+subtitle: "Zusammenführen von ASV-Tabelle, Taxonomie und Metadaten zu einem phyloseq-Objekt"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+## Übersicht
+
+Dieses Skript schließt die Lücke zwischen der DADA2-Pipeline
+(`02_dada2_pipeline_v3.qmd`, liefert `seqtab_all.rds`) und der
+Cluster-Taxonomie-Zuweisung (`assign_taxonomy_v3.R`, liefert
+`taxonomy_all.csv`). Es verknüpft beide mit den Sample-Metadaten
+zu einem einzigen `phyloseq`-Objekt (`phyloseq_all.rds`), das von
+allen nachfolgenden Skripten (Filtering, Diversität, etc.) verwendet wird.
+
+**Reiner Verknüpfungsschritt** — keine inhaltlichen/methodischen
+Entscheidungen, nur mechanisches Zusammenführen bereits vorhandener
+Objekte.
+
+---
+
+## 1) Pakete laden
+
+```{r}
+#| label: packages
+
+library(phyloseq)
+library(dplyr)
+library(tibble)
+```
+
+---
+
+## 2) Daten laden
+
+```{r}
+#| label: load-data
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# ── ASV-Tabelle (aus 02_dada2_pipeline_v3.qmd) ────────────────────────────────
+seqtab_all <- readRDS(file.path(base_path, "Data/Final/DADA2_Output_v3/seqtab_all.rds"))
+cat("seqtab_all geladen:", nrow(seqtab_all), "Proben x", ncol(seqtab_all), "ASVs\n")
+
+# ── Taxonomie (aus assign_taxonomy_v3.R, auf dem Cluster gelaufen) ────────────
+taxonomy_all <- read.csv(file.path(base_path, "Data/Final/Taxonomy_v3/taxonomy_all.csv"),
+                          stringsAsFactors = FALSE)
+cat("taxonomy_all geladen:", nrow(taxonomy_all), "ASVs klassifiziert\n")
+
+# ── Sample-Metadaten ───────────────────────────────────────────────────────────
+# WICHTIG: Pfad/Dateiname hier prüfen und ggf. anpassen!
+# Diese Datei muss mindestens enthalten: sample_id (oder sample),
+# beetle_species, family, sequencing_run -- da diese Spalten in
+# nachfolgenden Skripten (z.B. 04_QC_Phyloseq_v3, Core/IndVal/Betadisper)
+# direkt verwendet werden (sample_data(ps)$sequencing_run, $family, etc.)
+meta_raw <- read.csv(file.path(base_path, "Data/Metadata/sample_metadata.csv"),
+                      stringsAsFactors = FALSE)
+
+cat("Metadaten geladen:", nrow(meta_raw), "Proben,",
+    "Spalten:", paste(colnames(meta_raw), collapse = ", "), "\n")
+```
+
+::: callout-warning
+## Pfad prüfen
+
+Der Pfad zur Metadaten-Datei (`Data/Metadata/sample_metadata.csv`) ist
+ein Platzhalter, da die in `ID_sample_beetle.csv` hochgeladene Version
+nur `sample_id` und `beetle_species` enthält, aber nachfolgende
+Skripte zusätzlich `family` und `sequencing_run` aus `sample_data(ps)`
+auslesen. Bitte auf die tatsächliche, vollständige Metadaten-Datei
+anpassen, oder die fehlenden Spalten (`family`, `sequencing_run`)
+hier ergänzen, bevor das `phyloseq`-Objekt gebaut wird.
+:::
+
+---
+
+## 3) Sample-Namen abgleichen
+
+```{r}
+#| label: sample-name-check
+
+# Sample-Namen aus seqtab_all (Zeilennamen) vs. Metadaten abgleichen
+seqtab_samples <- rownames(seqtab_all)
+meta_samples   <- meta_raw$sample_id  # ggf. Spaltennamen anpassen
+
+cat("Proben in seqtab_all, aber NICHT in Metadaten:\n")
+print(setdiff(seqtab_samples, meta_samples))
+
+cat("\nProben in Metadaten, aber NICHT in seqtab_all:\n")
+print(setdiff(meta_samples, seqtab_samples))
+
+# Falls beide Listen leer sind, passt der Abgleich -- sonst hier stoppen
+# und die Diskrepanz klären, BEVOR das phyloseq-Objekt gebaut wird!
+stopifnot(
+  "Proben-Mismatch zwischen seqtab_all und Metadaten -- bitte zuerst klären!" =
+    length(setdiff(seqtab_samples, meta_samples)) == 0
+)
+```
+
+---
+
+## 4) Taxonomie-Matrix aufbauen
+
+```{r}
+#| label: build-tax-matrix
+
+# Taxonomie muss als Matrix mit Sequenzen als Rownames vorliegen,
+# in derselben Reihenfolge/Auswahl wie die Spalten von seqtab_all
+tax_mat <- taxonomy_all %>%
+  filter(sequence %in% colnames(seqtab_all)) %>%
+  column_to_rownames("sequence") %>%
+  as.matrix()
+
+# Reihenfolge an seqtab_all anpassen
+tax_mat <- tax_mat[colnames(seqtab_all), ]
+
+cat("Taxonomie-Matrix:", nrow(tax_mat), "ASVs x", ncol(tax_mat), "Ränge\n")
+cat("Spalten:", paste(colnames(tax_mat), collapse = ", "), "\n")
+```
+
+---
+
+## 5) Sample-Daten aufbauen
+
+```{r}
+#| label: build-sample-data
+
+sample_df <- meta_raw %>%
+  column_to_rownames("sample_id")  # ggf. Spaltennamen anpassen
+
+# Reihenfolge an seqtab_all anpassen
+sample_df <- sample_df[rownames(seqtab_all), ]
+
+cat("Sample-Daten:", nrow(sample_df), "Proben x", ncol(sample_df), "Variablen\n")
+```
+
+---
+
+## 6) Phyloseq-Objekt zusammensetzen
+
+```{r}
+#| label: build-phyloseq
+
+ps <- phyloseq(
+  otu_table(seqtab_all, taxa_are_rows = FALSE),
+  sample_data(sample_df),
+  tax_table(tax_mat)
+)
+
+cat("=== phyloseq-Objekt erstellt ===\n")
+cat("Proben:", nsamples(ps), "\n")
+cat("ASVs:  ", ntaxa(ps), "\n")
+print(ps)
+```
+
+---
+
+## 7) Sanity-Checks
+
+```{r}
+#| label: sanity-checks
+
+# Keine leeren Proben/ASVs nach dem Zusammenführen
+cat("Proben mit 0 Reads gesamt:", sum(sample_sums(ps) == 0), "\n")
+cat("ASVs mit 0 Reads gesamt:  ", sum(taxa_sums(ps) == 0), "\n")
+
+# Stichprobe der Taxonomie -- sollte UNITE-typische Präfixe zeigen (k__, p__, ...)
+head(as.data.frame(tax_table(ps)), 3)
+```
+
+---
+
+## 8) Speichern
+
+```{r}
+#| label: save-output
+
+output_path <- file.path(base_path, "Data/Final/Taxonomy_v3/phyloseq_all.rds")
+saveRDS(ps, output_path)
+cat("Gespeichert:", output_path, "\n")
+cat("\nNächstes Skript (04_QC_Phyloseq_v3.qmd) liest diese Datei direkt ein:\n")
+cat('  ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v3/phyloseq_all.rds"))\n')
+```
+
+---
+
+## 9) Session Info
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```

@@ -1,0 +1,175 @@
+---
+title: "DADA2 – Qualitätskontrolle"
+subtitle: "Pilzgemeinschaften auf Käfern | Masterarbeit"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+## Übersicht
+
+Dieses Dokument zeigt die Qualitätsprofile der getrimmten FASTQ-Dateien
+für alle vier Sequenzierläufe.
+Ziel ist es, geeignete `truncLen`-Werte für den späteren DADA2-Schritt zu bestimmen.
+
+> **Primer:** FWD = ITS3_KYO2 (`GATGAAGAACGYAGYRAA`) | REV = ITS4_KYO2 (`RBTTTCTTTTCCTCCGCT`)
+
+---
+
+## 1) Pakete laden
+
+```{r, message=FALSE}
+#| label: packages
+
+library(dada2)
+```
+
+## 2) Pfade definieren
+
+```{r}
+#| label: setup
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# Alle vier Sequenzierläufe
+runs <- list(
+  EC24_245 = file.path(base_path, "Data/Processed/Trimmed/EC24_245"),
+  `3XX`    = file.path(base_path, "Data/Processed/Trimmed/3XX"),
+  Popa     = file.path(base_path, "Data/Processed/Trimmed/Popa"),
+  Buse     = file.path(base_path, "Data/Processed/Trimmed/Buse")
+)
+
+# Dateien einlesen
+files <- lapply(runs, function(path) {
+  list(
+    R1 = sort(list.files(path, pattern = "_R1_trimmed.fastq", full.names = TRUE)),
+    R2 = sort(list.files(path, pattern = "_R2_trimmed.fastq", full.names = TRUE))
+  )
+})
+
+# Überblick
+for (run in names(files)) {
+  cat(run, "→ R1:", length(files[[run]]$R1), "| R2:", length(files[[run]]$R2), "\n")
+}
+```
+
+---
+
+## 3) Qualitätsprofile
+
+::: callout-tip
+## Wie liest man diese Plots?
+- **Grüne Linie** = mittlerer Qualitätsscore (Phred) pro Position
+- **Orange Linie** = Median
+- **Q30** = 99,9% korrekt → sehr gut ✓
+- **Q20** = 99,0% korrekt → akzeptabel
+- Unter Q20 → hier sollte getrimmt werden!
+
+Notieren, bei welcher Position (bp) die Qualität deutlich abfällt – das wird der `truncLen`-Wert.
+:::
+
+### Lauf 1: EC24_245
+
+```{r}
+#| label: quality-EC24_245
+#| fig-cap: "Qualitätsprofil EC24_245 – erste 3 Proben"
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_EC24_245_R1.pdf"), width = 12, height = 6)
+plotQualityProfile(files$EC24_245$R1[1:3])
+dev.off()
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_EC24_245_R2.pdf"), width = 12, height = 6)
+plotQualityProfile(files$EC24_245$R2[1:3])
+dev.off()
+
+plotQualityProfile(files$EC24_245$R1[1:3])
+plotQualityProfile(files$EC24_245$R2[1:3])
+```
+
+### Lauf 2: 3XX
+
+```{r}
+#| label: quality-3XX
+#| fig-cap: "Qualitätsprofil 3XX – erste 3 Proben"
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_3XX_R1.pdf"), width = 12, height = 6)
+plotQualityProfile(files$`3XX`$R1[1:3])
+dev.off()
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_3XX_R2.pdf"), width = 12, height = 6)
+plotQualityProfile(files$`3XX`$R2[1:3])
+dev.off()
+
+plotQualityProfile(files$`3XX`$R1[1:3])
+plotQualityProfile(files$`3XX`$R2[1:3])
+```
+
+### Lauf 3: Popa
+
+```{r}
+#| label: quality-Popa
+#| fig-cap: "Qualitätsprofil Popa – erste 3 Proben"
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_Popa_R1.pdf"), width = 12, height = 6)
+plotQualityProfile(files$Popa$R1[1:3])
+dev.off()
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_Popa_R2.pdf"), width = 12, height = 6)
+plotQualityProfile(files$Popa$R2[1:3])
+dev.off()
+
+plotQualityProfile(files$Popa$R1[1:3])
+plotQualityProfile(files$Popa$R2[1:3])
+```
+
+### Lauf 4: Buse
+
+```{r}
+#| label: quality-Buse
+#| fig-cap: "Qualitätsprofil Buse – erste 3 Proben"
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_Buse_R1.pdf"), width = 12, height = 6)
+plotQualityProfile(files$Buse$R1[1:3])
+dev.off()
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_Buse_R2.pdf"), width = 12, height = 6)
+plotQualityProfile(files$Buse$R2[1:3])
+dev.off()
+
+plotQualityProfile(files$Buse$R1[1:3])
+plotQualityProfile(files$Buse$R2[1:3])
+```
+
+---
+
+## 4) Notizen zu truncLen
+
+Beobachtete Werte pro Lauf:
+
+| Lauf | R1 gut bis (bp) | R2 gut bis (bp) | truncLen R1 | truncLen R2 |
+|------|----------------|----------------|-------------|-------------|
+| EC24_245 | 230 bp | 200 bp | 220 | 180 |
+| 3XX      | 250 bp | 230 bp | 240 | 220 |
+| Popa     | 220 bp | 200 bp | 200 | 180 |
+| Buse     | 300 bp | 280 bp | 290 | 270 |
+
+---
+
+## 5) Sessioninfo
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```

@@ -1,0 +1,434 @@
+---
+title: "06_NMDS"
+format: pdf
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## Pakete laden
+
+```{r}
+#| message: false
+#| warning: false
+
+library(phyloseq)  # otu_table
+library(vegan)     # vegdist
+library(dplyr)
+library(tidyverse)
+library(Biostrings)
+library(ggsci)
+```
+
+
+## 2) Daten laden
+
+```{r}
+#| label: load-data
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# Phyloseq-Objekt
+ps <- readRDS(file.path(base_path, "Data/Final/phyloseq_all.rds"))
+
+beetle_traits <- read.csv("~/Master_EnvironmentalSciences/Master_Thesis/Data/Metadata/beetle_traits.csv")
+
+
+```
+
+## 1) Beta-Diversität: Ordination (NMDS)
+
+```{r}
+# Rarefaction – auf gleiche Sequenztiefe normalisieren
+set.seed(42)
+ps_rare <- rarefy_even_depth(ps, sample.size = min(sample_sums(ps)),
+                              rngseed = 42, replace = FALSE)
+cat("Reads pro Sample nach Rarefaction:", min(sample_sums(ps_rare)), "\n")
+cat("ASVs nach Rarefaction:", ntaxa(ps_rare), "\n")
+
+# Dann nochmal OTU-Matrix
+otu_mat_rare <- t(as.matrix(otu_table(ps_rare)))
+dist_bc_rare <- vegdist(otu_mat_rare, method = "bray")
+summary(as.vector(dist_bc_rare))
+# Median =1 =>Schlecht
+```
+```{r}
+otu_hell <- decostand(otu_mat, method = "hellinger")
+dist_hell <- dist(otu_hell, method = "euclidean")
+summary(as.vector(dist_hell))
+
+#1.4 ist auch wenig
+```
+
+```{r}
+# ASVs pro Lauf (nur wo Reads > 0)
+for (run in c("EC24_245", "3XX", "Popa", "Buse")) {
+  ps_sub <- subset_samples(ps, sequencing_run == run)
+  ps_sub <- prune_taxa(taxa_sums(ps_sub) > 0, ps_sub)
+  cat(run, ":", ntaxa(ps_sub), "ASVs\n")
+}
+
+# Überlapp zwischen Läufen
+asvs_ec24 <- taxa_names(prune_taxa(taxa_sums(subset_samples(ps, sequencing_run == "EC24_245")) > 0, ps))
+asvs_3xx  <- taxa_names(prune_taxa(taxa_sums(subset_samples(ps, sequencing_run == "3XX")) > 0, ps))
+asvs_buse <- taxa_names(prune_taxa(taxa_sums(subset_samples(ps, sequencing_run == "Buse")) > 0, ps))
+asvs_popa <- taxa_names(prune_taxa(taxa_sums(subset_samples(ps, sequencing_run == "Popa")) > 0, ps))
+
+cat("\nÜberlapp EC24 & 3XX:", length(intersect(asvs_ec24, asvs_3xx)), "\n")
+cat("Überlapp EC24 & Buse:", length(intersect(asvs_ec24, asvs_buse)), "\n")
+cat("Überlapp 3XX & Buse:", length(intersect(asvs_3xx, asvs_buse)), "\n")
+cat("Überlapp alle 4:", length(Reduce(intersect, list(asvs_ec24, asvs_3xx, asvs_buse, asvs_popa))), "\n")
+```
+
+ASVs müssen geclustert werden, sonst gibt es keine sinnvolle NMDS 
+
+## VSearch vorbereiten: ASV to OTU clustering for NMDS
+
+```{r}
+# ASV-Sequenzen als FASTA exportieren
+# FASTA neu exportieren mit Sequenz als Name
+
+seqs <- taxa_names(ps)  # das sind die echten Sequenzen
+names(seqs) <- seqs     # Sequenz = Name
+
+writeXStringSet(
+  DNAStringSet(seqs),
+  file.path(base_path, "Data/Final/asvs_all_v2.fasta")
+)
+
+# Prüfen
+readLines(file.path(base_path, "Data/Final/asvs_all_v2.fasta"), n = 4)
+
+# VSEARCH on BWUniCLuster
+```
+## Prüfen, ob Clustering erfolgreich war
+
+```{r}
+# ── Schritt 1: .uc Datei einlesen ─────────────────────────────────────────────
+uc <- read.table(file.path(base_path, "Data/Final/otus.uc"),
+                 sep = "\t", header = FALSE, stringsAsFactors = FALSE)
+
+# Nur Hit-Zeilen (H) und Seed-Zeilen (S) behalten
+uc_hits <- uc[uc$V1 %in% c("H", "S"), c("V1", "V9", "V10")]
+colnames(uc_hits) <- c("type", "asv", "otu")
+
+# Size-Tag entfernen
+uc_hits$asv_clean <- gsub(";size=.*$", "", uc_hits$asv)
+uc_hits$otu_clean <- gsub(";size=.*$", "", uc_hits$otu)
+
+# Für S-Zeilen (Seeds) ist OTU = ASV
+uc_hits$otu_clean[uc_hits$type == "S"] <- uc_hits$asv_clean[uc_hits$type == "S"]
+
+cat("ASVs gemappt:", nrow(uc_hits), "\n")
+cat("OTUs gesamt:", length(unique(uc_hits$otu_clean)), "\n")
+
+# ── Schritt 2: OTU-Tabelle erstellen ──────────────────────────────────────────
+# ASV-Matrix aus phyloseq (Samples × ASVs)
+asv_mat <- as.matrix(t(otu_table(ps)))
+colnames(asv_mat) <- gsub("^X", "", colnames(asv_mat))
+
+# Mapping: Sequenz → OTU-Centroid
+asv_to_otu <- setNames(uc_hits$otu_clean, uc_hits$asv_clean)
+
+# Nur gematchte ASVs
+shared <- intersect(colnames(asv_mat), names(asv_to_otu))
+cat("Matches:", length(shared), "\n") #10833
+
+# OTU-Tabelle durch Summierung
+otu_mat_new <- t(rowsum(t(asv_mat[, shared]),
+                         group = asv_to_otu[shared],
+                         na.rm = TRUE))
+
+cat("OTU-Tabelle:", nrow(otu_mat_new), "Samples ×", ncol(otu_mat_new), "OTUs\n")
+
+# ── Schritt 3: Distanzmatrix prüfen ───────────────────────────────────────────
+dist_otu <- vegdist(otu_mat_new, method = "bray")
+summary(as.vector(dist_otu))
+
+# OTU-Overlap zwischen Läufen
+meta_df_clean <- data.frame(sample_data(ps)) %>% rownames_to_column("sample")
+
+for (run in c("EC24_245", "3XX", "Popa", "Buse")) {
+  samples <- meta_df_clean$sample[meta_df_clean$sequencing_run == run]
+  samples <- gsub("^X", "", samples)
+  otus <- colnames(otu_mat_new)[colSums(otu_mat_new[samples, ]) > 0]
+  cat(run, ":", length(otus), "OTUs\n")
+}
+
+# OTUs pro Lauf als Liste
+otus_per_run <- list()
+for (run in c("EC24_245", "3XX", "Popa", "Buse")) {
+  samples <- meta_df_clean$sample[meta_df_clean$sequencing_run == run]
+  samples <- gsub("^X", "", samples)
+  otus_per_run[[run]] <- colnames(otu_mat_new)[colSums(otu_mat_new[samples, ]) > 0]
+}
+
+# Paarweiser Overlap
+cat("Überlapp EC24 & 3XX:", length(intersect(otus_per_run$EC24_245, otus_per_run$`3XX`)), "\n")
+cat("Überlapp EC24 & Buse:", length(intersect(otus_per_run$EC24_245, otus_per_run$Buse)), "\n")
+cat("Überlapp 3XX & Buse:", length(intersect(otus_per_run$`3XX`, otus_per_run$Buse)), "\n")
+cat("Überlapp alle 4:", length(Reduce(intersect, otus_per_run)), "\n")
+```
+
+```{r, fig.height=8, fig.width=8}
+
+# ── Schritt 4: NMDS ───────────────────────────────────────────────────────────
+set.seed(123)
+ord_otu <- metaMDS(otu_mat_new, distance = "bray", k = 2, trymax = 100)
+cat("Stress:", round(ord_otu$stress, 4), "\n")
+
+# ── Schritt 5: Plot ───────────────────────────────────────────────────────────
+nmds_df <- data.frame(
+  NMDS1  = ord_otu$points[, 1],
+  NMDS2  = ord_otu$points[, 2],
+  sample = rownames(ord_otu$points)) %>%
+  left_join(data.frame(sample_data(ps)) %>%
+              rownames_to_column("sample") %>%
+              mutate(sample = gsub("^X", "", sample)) %>%
+              dplyr::select(sample, beetle_species, family),
+            by = "sample")
+
+
+# Farben & Reihenfolge (konsistent mit beetle_traits.qmd)
+family_colors <- c(
+  "Carabidae"     = "#2C7BB6",
+  "Buprestidae"   = "#A63603",
+  "Tenebrionidae" = "#1A9641",
+  "Cerambycidae"  = "#FDAE61",
+  "Curculionidae" = "#7B3294"
+)
+
+species_order <- c(
+  "Anthaxia_fulgurans", "Anthaxia_quadripunctata",
+  "Chrysobothris_affinis", "Buprestis_haemorrhoidalis",
+  "Bolitophagus_reticulatus",
+  "Rhagium_bifasciatum", "Rhagium_inquisitor", "Rhagium_mordax",
+  "Grammoptera_ruficornis", "Pachytodes_cerambyciformis",
+  "Rutpela_maculata", "Stenurella_melanura",
+  "Ips_typographus",
+  "Pterostichus_aethiops"
+)
+
+cols <- setNames(pal_d3("category20")(14), species_order)
+
+ggplot(nmds_df, aes(NMDS1, NMDS2, color = beetle_species, shape = family)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(aes(group = beetle_species), 
+               level = 0.95, linewidth = 0.4,
+               linetype = "dashed") +
+  scale_color_manual(values = cols, drop = FALSE,
+                     labels = function(x) gsub("_", " ", x)) +  # Unterstriche → Leerzeichen
+  scale_shape_manual(values = c(16, 17, 15, 18, 8)) +
+  annotate("text", x = Inf, y = -Inf,
+           label = paste0("Stress = ", round(ord_otu$stress, 4)),
+           hjust = 1.1, vjust = -0.5, size = 3.5) +
+  labs(title = "NMDS (Bray-Curtis, OTU-level)",
+       color = "Beetle species", shape = "Family") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "bottom",
+      legend.box = "vertical") +
+  guides(color = guide_legend(nrow = 4, byrow = TRUE,
+                              override.aes = list(size = 3)),
+         shape = guide_legend(nrow = 1))
+
+
+ggsave(file.path(base_path, "Results/Figures/NMDS_OTU.pdf"),
+       width = 12, height = 7, bg = "white")
+```
+
+
+
+
+
+
+---
+
+## 2) PERMANOVA: Käferart, Familie, Traits
+
+```{r}
+#| label: permanova
+
+meta <- as.data.frame(sample_data(ps))
+
+# Beetle traits zu Metadaten hinzufügen
+meta <- meta %>%
+  left_join(beetles[, c("species", "gilde", "nahrung", "wald",
+                         "niche_decay_num", "body_length",
+                         "hairiness_total", "wing_load")],
+            by = c("beetle_species" = "species"))
+
+# ── PERMANOVA 1: Käferart ────────────────────────────────────────────────────
+perm_species <- adonis2(dist_bc ~ beetle_species, data = meta,
+                        permutations = 999)
+cat("PERMANOVA ~ beetle_species:\n")
+print(perm_species)
+
+# ── PERMANOVA 2: Familie (Phylogenie-Proxy) ───────────────────────────────────
+perm_family <- adonis2(dist_bc ~ family, data = meta,
+                       permutations = 999)
+cat("\nPERMANOVA ~ family:\n")
+print(perm_family)
+
+# ── PERMANOVA 3: Funktionelle Traits ─────────────────────────────────────────
+perm_traits <- adonis2(dist_bc ~ gilde + nahrung + wald +
+                                  niche_decay_num + body_length +
+                                  hairiness_total + wing_load,
+                       data = meta, permutations = 999, na.action = na.omit)
+cat("\nPERMANOVA ~ functional traits:\n")
+print(perm_traits)
+
+# ── PERMANOVA 4: Multifaktoriell (Phylogenie + Traits) ───────────────────────
+perm_multi <- adonis2(dist_bc ~ family + gilde + nahrung + wald +
+                                 niche_decay_num + body_length +
+                                 hairiness_total + wing_load,
+                      data = meta, permutations = 999, na.action = na.omit)
+cat("\nMultifaktorielle PERMANOVA:\n")
+print(perm_multi)
+```
+
+---
+
+## 7) Paarweise PERMANOVA
+
+```{r}
+#| label: pairwise-permanova
+
+pairwise_res <- pairwise.adonis2(dist_bc ~ beetle_species,
+                                  data = meta,
+                                  nperm = 999)
+pairwise_res
+```
+
+---
+
+## 8) Indicator Species
+
+```{r}
+#| label: indicator-species
+
+# OTU presence/absence Matrix (Samples × ASVs)
+otu_pa <- as.data.frame(otu_table(ps))
+otu_pa[otu_pa > 0] <- 1
+otu_pa <- t(otu_pa)  # Samples × ASVs
+
+group <- sample_data(ps)$beetle_species
+
+# Indicator species Analyse
+indval_result <- multipatt(
+  otu_pa,
+  group,
+  func    = "IndVal.g",
+  control = how(nperm = 999)
+)
+
+summary(indval_result, alpha = 0.05)
+
+# Als DataFrame
+indval_df <- as.data.frame(indval_result$sign) %>%
+  rownames_to_column("ASV") %>%
+  filter(p.value <= 0.05)
+
+# Taxonomie hinzufügen
+indval_taxa <- indval_df %>%
+  left_join(tax_df[, c("ASV", "Genus_clean", "Species", "Family")],
+            by = "ASV")
+
+cat("Signifikante Indicator ASVs:", nrow(indval_taxa), "\n")
+head(indval_taxa)
+```
+
+---
+
+## 9) Core Mycobiome
+
+```{r}
+#| label: core-mycobiome
+
+# Core: ASVs die in >= 70% der Proben einer Art vorkommen
+core_per_species <- lapply(species_order, function(sp) {
+  ps_sub <- subset_samples(ps, beetle_species == sp)
+  if (nsamples(ps_sub) < 2) return(NULL)
+
+  otu_sub <- as.matrix(otu_table(ps_sub))
+  prevalence <- rowSums(otu_sub > 0) / nsamples(ps_sub)
+  core_asvs <- names(prevalence[prevalence >= 0.7])
+
+  data.frame(
+    beetle_species = sp,
+    ASV            = core_asvs,
+    prevalence     = prevalence[core_asvs]
+  )
+})
+
+core_df <- bind_rows(core_per_species)
+cat("Core ASVs gesamt:", nrow(core_df), "\n")
+
+core_summary <- core_df %>%
+  dplyr::count(beetle_species) %>%
+  mutate(beetle_species = factor(beetle_species, levels = species_order))
+
+ggplot(core_summary, aes(x = beetle_species, y = n,
+                          fill = beetle_species)) +
+  geom_col() +
+  scale_x_discrete(limits = species_order) +
+  labs(x = NULL, y = "Number of core ASVs",
+       title = "Core mycobiome size per beetle species (prevalence ≥ 70%)") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x  = element_text(angle = 45, hjust = 1, face = "italic"),
+        legend.position = "none")
+
+ggsave(file.path(base_path, "Results/Figures/core_mycobiome.pdf"),
+       width = 10, height = 6)
+```
+
+---
+
+## 10) Overlap zwischen Arten (UpSet + Jaccard)
+
+```{r}
+#| label: overlap
+
+# Liste: Käferart → Core ASVs
+otu_lists <- core_df %>%
+  group_by(beetle_species) %>%
+  summarise(asvs = list(unique(ASV)), .groups = "drop")
+otu_list <- setNames(otu_lists$asvs, otu_lists$beetle_species)
+
+# UpSet Plot
+ups_data <- fromList(otu_list)
+upset(ups_data, nsets = length(otu_list), order.by = "freq",
+      sets.x.label = "Core ASV overlap")
+
+# Jaccard Heatmap
+jacc <- vegdist(t(as.matrix(do.call(rbind,
+  lapply(names(otu_list), function(sp) {
+    all_asvs <- unique(unlist(otu_list))
+    as.integer(all_asvs %in% otu_list[[sp]])
+  })))), method = "jaccard")
+
+rownames(as.matrix(jacc)) <- names(otu_list)
+jac_long <- melt(1 - as.matrix(jacc))
+
+ggplot(jac_long, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "C") +
+  labs(x = NULL, y = NULL, fill = "Jaccard similarity",
+       title = "Core mycobiome overlap between beetle species") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+        axis.text.y = element_text(face = "italic"))
+
+ggsave(file.path(base_path, "Results/Figures/jaccard_heatmap.pdf"),
+       width = 10, height = 8)
+```
+
+---
+
+## Sessioninfo
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```

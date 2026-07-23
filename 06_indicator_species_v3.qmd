@@ -1,0 +1,458 @@
+---
+title: "06_indicator_species_v3"
+subtitle: "Indicator Species Analysis (IndVal), BLAST-Nachkorrektur unklassifizierter ASVs"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+## Übersicht
+
+ASV-basierte Indicator-Species-Analyse (`multipatt`, IndVal.g), gefolgt
+von einer gezielten BLAST-Nachkorrektur der ASVs, die bei UNITE
+unklassifiziert blieben. Baut auf `05_diversity_community_v3.qmd` auf
+(benötigt `asv_mat`, `meta_df`, `ps`).
+
+---
+
+## 1) Pakete laden
+
+```{r}
+#| label: packages
+#| message: false
+#| warning: false
+
+library(phyloseq)
+library(vegan)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(indicspecies)
+library(httr)
+library(microeco)
+
+```
+
+---
+
+## 2) Daten laden
+
+```{r}
+#| label: load-data
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v3/ps_filtered.rds"))
+
+asv_mat <- as(otu_table(ps), "matrix")
+if (taxa_are_rows(ps)) asv_mat <- t(asv_mat)
+rownames(asv_mat) <- gsub("^X", "", rownames(asv_mat))
+
+meta_df <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("sample") %>%
+  mutate(sample = gsub("^X", "", sample))
+
+# ── Taxonomie-Tabelle mit ASV-IDs und Sequenzen ───────────────────────────────
+tax_asv <- as.data.frame(tax_table(ps)) %>%
+  rownames_to_column("sequence") %>%
+  mutate(
+    asv_id        = paste0("ASV", seq_len(ntaxa(ps))),
+    Genus_clean   = gsub("g__", "", Genus),
+    Species_clean = gsub("s__", "", Species)
+  )
+
+# ASV-IDs als Spaltennamen für asv_mat übernehmen (statt Sequenzen)
+colnames(asv_mat) <- tax_asv$asv_id[match(colnames(asv_mat), tax_asv$sequence)]
+```
+
+---
+
+## 3) Indicator Species Analysis
+
+```{r}
+#| label: indicator-species
+
+group <- meta_df$beetle_species[match(rownames(asv_mat), meta_df$sample)]
+
+# ── P/A-basiert ────────────────────────────────────────────────────────────────
+asv_pa <- (asv_mat > 0) * 1
+indval_pa <- multipatt(
+  asv_pa, group,
+  func    = "IndVal.g",
+  duleg   = TRUE,
+  control = how(nperm = 999)
+)
+summary(indval_pa, alpha = 0.05)
+
+indval_taxa_pa <- as.data.frame(indval_pa$sign) %>%
+  rownames_to_column("asv_id") %>%
+  filter(p.value <= 0.05) %>%
+  pivot_longer(cols = starts_with("s."),
+               names_to = "beetle_species", values_to = "val") %>%
+  filter(val == 1) %>%
+  mutate(beetle_species = gsub("s\\.", "", beetle_species)) %>%
+  left_join(tax_asv %>% select(asv_id, Genus_clean, Species_clean),
+            by = "asv_id") %>%
+  arrange(beetle_species, desc(stat)) %>%
+  select(beetle_species, asv_id, Genus_clean, Species_clean, stat, p.value)
+
+cat("Signifikante Indicator ASVs (P/A):", nrow(indval_taxa_pa), "\n")
+indval_taxa_pa %>% count(beetle_species, sort = TRUE) %>% print(n = 13)
+
+# ── Read-basiert ───────────────────────────────────────────────────────────────
+indval_reads <- multipatt(
+  asv_mat, group,
+  func    = "IndVal.g",
+  duleg   = TRUE,
+  control = how(nperm = 999)
+)
+summary(indval_reads, alpha = 0.05)
+
+indval_taxa_reads <- as.data.frame(indval_reads$sign) %>%
+  rownames_to_column("asv_id") %>%
+  filter(p.value <= 0.05) %>%
+  pivot_longer(cols = starts_with("s."),
+               names_to = "beetle_species", values_to = "val") %>%
+  filter(val == 1) %>%
+  mutate(beetle_species = gsub("s\\.", "", beetle_species)) %>%
+  left_join(tax_asv %>% select(asv_id, Genus_clean, Species_clean),
+            by = "asv_id") %>%
+  arrange(beetle_species, desc(stat)) %>%
+  select(beetle_species, asv_id, Genus_clean, Species_clean, stat, p.value)
+
+cat("Signifikante Indicator ASVs (Reads):", nrow(indval_taxa_reads), "\n")
+```
+
+---
+
+## 4) BLAST-Nachkorrektur unklassifizierter Indicator-ASVs
+
+::: callout-note
+Wird selektiv nur für unklassifizierte Indicator-Taxa angewendet
+(`Genus_clean`/`Species_clean` = `NA`), nicht für den vollständigen
+ASV-Datensatz. Begründung: siehe Methods-Abschnitt
+`Subsection::Methods:IndVal`.
+:::
+
+```{r}
+#| label: blast-function
+#| eval: false
+
+blast_top_hit <- function(seq, asv_name) {
+  cat("\n--- BLAST für", asv_name, "---\n")
+
+  put <- POST("https://blast.ncbi.nlm.nih.gov/Blast.cgi", encode = "form",
+              body = list(CMD = "Put", PROGRAM = "blastn", DATABASE = "nt",
+                          QUERY = seq, MEGABLAST = "on"))
+  txt <- content(put, "text", encoding = "UTF-8")
+
+  rid_match <- regmatches(txt, regexpr("RID = (\\S+)", txt))
+  if (length(rid_match) == 0 || rid_match == "") {
+    cat("FEHLER: Keine RID erhalten.\n")
+    return(c(rid = NA, hit = NA, identity = NA))
+  }
+  rid <- sub("RID = (\\S+)", "\\1", rid_match)
+  cat("RID:", rid, "\n")
+
+  status_ok <- FALSE
+  for (i in 1:20) {
+    Sys.sleep(15)
+    status_txt <- content(GET("https://blast.ncbi.nlm.nih.gov/Blast.cgi",
+                               query = list(CMD = "Get", FORMAT_OBJECT = "SearchInfo", RID = rid)),
+                           "text", encoding = "UTF-8")
+    if (grepl("Status=READY", status_txt)) { status_ok <- TRUE; break }
+    if (grepl("Status=FAILED|Status=UNKNOWN", status_txt)) {
+      cat("FEHLER: Status FAILED/UNKNOWN\n")
+      return(c(rid = rid, hit = NA, identity = NA))
+    }
+    cat("  ...noch in Bearbeitung (Versuch", i, ")\n")
+  }
+  if (!status_ok) { cat("FEHLER: Timeout\n"); return(c(rid = rid, hit = NA, identity = NA)) }
+  cat("Status READY. Lade Ergebnis...\n")
+
+  result <- content(GET("https://blast.ncbi.nlm.nih.gov/Blast.cgi",
+                         query = list(CMD = "Get", RID = rid, FORMAT_TYPE = "Text",
+                                      FORMAT_OBJECT = "Alignment", DESCRIPTIONS = 5, ALIGNMENTS = 1)),
+                     "text", encoding = "UTF-8")
+
+  hit_match <- regmatches(result, regexpr(">[A-Za-z0-9_.]+\\s+[^\\n]+", result, perl = TRUE))
+  if (length(hit_match) == 0 || hit_match == "") {
+    cat("WARNUNG: Kein Treffer. 'No hits found':", grepl("No hits found", result), "\n")
+    return(c(rid = rid, hit = NA, identity = NA))
+  }
+  hit_line <- trimws(strsplit(sub("^>\\S+\\s+", "", hit_match), "\n")[[1]][1])
+
+  ident_match <- regmatches(result, regexpr("Identities = \\d+/\\d+ \\(\\d+%\\)", result))
+  identity <- if (length(ident_match) == 0 || ident_match == "") NA else ident_match
+
+  cat("Top-Hit:", hit_line, "| Identity:", identity, "\n")
+  c(rid = rid, hit = hit_line, identity = identity)
+}
+```
+
+```{r}
+#| label: blast-unclassified-na
+#| eval: false
+
+# ── Schritt 1: ALLE unklassifizierten (NA) Indicator-ASVs aus indval_taxa_reads ──
+unclassified <- indval_taxa_reads %>%
+  filter(is.na(Genus_clean) & is.na(Species_clean)) %>%
+  distinct(asv_id, beetle_species, stat, p.value)
+
+cat("Unklassifizierte Indicator-ASVs (Reads-basiert):", nrow(unclassified), "\n")
+print(unclassified)
+
+asv_targets <- unique(unclassified$asv_id)
+seqs <- setNames(tax_asv$sequence[match(asv_targets, tax_asv$asv_id)], asv_targets)
+
+blast_results <- mapply(blast_top_hit, seqs, names(seqs), SIMPLIFY = FALSE)
+
+blast_summary <- data.frame(
+  asv_id      = names(seqs),
+  sequenz     = seqs,
+  blast_rid   = sapply(blast_results, `[`, "rid"),
+  top_hit_raw = sapply(blast_results, `[`, "hit"),
+  identity    = sapply(blast_results, `[`, "identity"),
+  row.names = NULL
+) %>%
+  left_join(unclassified, by = "asv_id")
+
+print(blast_summary)
+write.csv(blast_summary,
+          file.path(base_path, "Data/Final/indval_unclassified_blast_results.csv"),
+          row.names = FALSE)
+```
+
+```{r}
+#| label: blast-uncultured
+#| eval: false
+
+# ── Schritt 2: ASVs mit Pseudo-NA-Klassifikation (z.B. "Uncultured fungus") ───
+# Diese wurden von UNITE bereits mit einem nicht-informativen Platzhalter
+# versehen (kein echtes NA) und sind daher in Schritt 1 NICHT erfasst.
+
+pseudo_na_terms <- c("Uncultured", "uncultured", "Unidentified", "unidentified",
+                      "Fungal", "fungal", "Fungi", "fungi", "Environmental", "environmental")
+
+pseudo_na_hits <- indval_taxa_reads %>%
+  filter(Genus_clean %in% pseudo_na_terms) %>%
+  distinct(asv_id, beetle_species, stat, p.value)
+
+cat("Zu blastende Uncultured-Indicator-ASVs:", nrow(pseudo_na_hits), "\n")
+print(pseudo_na_hits)
+
+asv_targets_uc <- unique(pseudo_na_hits$asv_id)
+seqs_uc <- setNames(tax_asv$sequence[match(asv_targets_uc, tax_asv$asv_id)], asv_targets_uc)
+
+blast_results_uc <- mapply(blast_top_hit, seqs_uc, names(seqs_uc), SIMPLIFY = FALSE)
+
+blast_summary_uc <- data.frame(
+  asv_id      = names(seqs_uc),
+  sequenz     = seqs_uc,
+  blast_rid   = sapply(blast_results_uc, `[`, "rid"),
+  top_hit_raw = sapply(blast_results_uc, `[`, "hit"),
+  identity    = sapply(blast_results_uc, `[`, "identity"),
+  row.names = NULL
+) %>%
+  left_join(pseudo_na_hits, by = "asv_id")
+
+print(blast_summary_uc)
+write.csv(blast_summary_uc,
+          file.path(base_path, "Data/Final/indval_uncultured_blast_results.csv"),
+          row.names = FALSE)
+
+# Hinweis: in dieser Studie ergaben diese Anfragen mit einer Ausnahme
+# (ASV654, s.u.) überwiegend "uncultured environmental sequence"-Treffer
+# in NCBI nt -- d.h. Datenbanklücke, nicht Pipeline-Artefakt. Weiteres
+# Blasten dieser Kategorie war daher nicht zielführend.
+```
+
+# Manuelles Blasten von ASV 5 und 70 (Corymbia rubra)
+
+```{r}
+# ── ASV5 und ASV70 Sequenzen prüfen ───────────────────────────────────────────
+
+check_asvs <- c("ASV5", "ASV70")
+
+asv_check <- tax_asv %>%
+  filter(asv_id %in% check_asvs) %>%
+  select(asv_id, sequence, Genus_clean, Species_clean)
+
+print(asv_check)
+
+# ── Länge der Sequenzen prüfen ───────────────────────────────────────────────
+
+asv_check %>%
+  mutate(seq_length = nchar(sequence)) %>%
+  select(asv_id, seq_length, sequence) %>%
+  print()
+
+# ASV 5 = Scheffersomyces sp. --> 100% Hit bei Scheffersomyces shehatae(ACCESSION: KP783503) und Scheffersomyces insectosa (" Yeasts from frass of longhorn beetle larvae (Cerambycidae) in birch, ACCESSION: PP410361)
+
+# ASV 70 = Uncultured fungus!
+```
+
+---
+
+## 5) Manuelles Eintragen der BLAST-Korrekturen (>98% Identity)
+
+::: callout-warning
+Vor dem Eintragen: `top_hit_raw` manuell prüfen. Höhere Taxon-Ränge
+(Class/Order/Family statt Genus, z.B. "Sordariomycetes",
+"Pleosporales") NICHT als Genus eintragen. "cf."-Fälle: Artname mit
+Unsicherheitsvermerk übernehmen (z.B. "cf. alpicola"), nicht
+unkommentiert glattziehen.
+:::
+
+```{r}
+#| label: apply-taxonomy-corrections
+
+# Erwartet eine bereits manuell bereinigte CSV (s. Callout oben),
+# mit Spalten: asv_id, Genus_blast, Species_blast, identity_pct, top_hit_raw
+corrections <- read.csv(
+  file.path(base_path, "Data/Final/taxonomy_blast_corrections_log.csv"),
+  stringsAsFactors = FALSE
+)
+
+cat("Anzahl Korrekturen, die eingetragen werden:", nrow(corrections), "\n")
+
+missing_asv <- setdiff(corrections$asv_id, tax_asv$asv_id)
+if (length(missing_asv) > 0) {
+  cat("WARNUNG: Diese ASV-IDs existieren NICHT in tax_asv:\n")
+  print(missing_asv)
+}
+
+n_patched <- 0
+for (i in seq_len(nrow(corrections))) {
+  asv <- corrections$asv_id[i]
+  if (asv %in% tax_asv$asv_id) {
+    tax_asv$Genus_clean[tax_asv$asv_id == asv]   <- corrections$Genus_blast[i]
+    tax_asv$Species_clean[tax_asv$asv_id == asv] <- corrections$Species_blast[i]
+    n_patched <- n_patched + 1
+  }
+}
+cat("tax_asv aktualisiert für", n_patched, "von", nrow(corrections), "ASVs.\n")
+
+# ── Manuelle Taxonomie-Korrektur für einzelne ASVs (Corymbia rubra) ────────────────────────────
+
+tax_asv$Genus_clean[tax_asv$asv_id == "ASV5"]   <- "Scheffersomyces"
+tax_asv$Species_clean[tax_asv$asv_id == "ASV5"] <- "sp."
+
+cat("Manuelle Korrektur angewendet: ASV5 -> Scheffersomyces sp.\n")
+
+# ── IndVal-Tabelle mit korrigierter Taxonomie neu erzeugen ────────────────────
+indval_taxa_reads <- as.data.frame(indval_reads$sign) %>%
+  rownames_to_column("asv_id") %>%
+  filter(p.value <= 0.05) %>%
+  pivot_longer(cols = starts_with("s."),
+               names_to = "beetle_species", values_to = "val") %>%
+  filter(val == 1) %>%
+  mutate(beetle_species = gsub("s\\.", "", beetle_species)) %>%
+  left_join(tax_asv %>% select(asv_id, Genus_clean, Species_clean),
+            by = "asv_id") %>%
+  arrange(beetle_species, desc(stat)) %>%
+  select(beetle_species, asv_id, Genus_clean, Species_clean, stat, p.value)
+
+n_na_now <- sum(is.na(indval_taxa_reads$Genus_clean))
+cat("Verbleibende unklassifizierte (NA) Indicator-ASVs:", n_na_now,
+    "von", nrow(indval_taxa_reads), "\n")
+
+
+```
+# Speichern
+
+```{r}
+# ── Korrigierte Taxonomie in phyloseq-Objekt übernehmen ──────────────────────
+
+tax_mat <- as.data.frame(tax_table(ps))
+str(tax_mat)
+
+tax_mat$Genus[tax_mat$ASV_ID == "ASV5"]   <- "Scheffersomyces"
+tax_mat$Species[tax_mat$ASV_ID == "ASV5"] <- "sp."
+
+tax_table(ps) <- as.matrix(tax_mat)
+
+# aktualisiertes phyloseq-Objekt speichern
+saveRDS(
+  ps,
+  file = file.path(base_path, "Data/Final/Taxonomy_v3/ps_filtered.rds")
+)
+
+cat("ps mit korrigierter Taxonomie gespeichert.\n")
+```
+
+---
+
+## 6) Top-5-Indicator-Taxa pro Käferart (für LaTeX-Tabelle)
+
+```{r}
+#| label: top5-indicators
+
+indval_top5 <- indval_taxa_reads %>%
+  group_by(beetle_species) %>%
+  slice_max(order_by = stat, n = 5, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(beetle_species, desc(stat))
+
+print(indval_top5, n = Inf)
+```
+
+---
+
+## 7) Lifestyle-Anreicherung (FungalTraits)
+
+::: callout-note
+Lifestyle-Lookup wird in `08_lifestyle_network_v3.qmd` einmalig erzeugt
+und als CSV gespeichert (`asv_lifestyle_lookup.csv`). Dieses Skript
+liest die Datei nur ein, um Code-Duplikation zu vermeiden.
+:::
+
+```{r}
+#| label: indval-with-lifestyle
+
+data(fungi_func_FungalTraits)
+
+tax_traits_06 <- tax_asv %>%
+  left_join(fungi_func_FungalTraits %>% select(GENUS, primary_lifestyle),
+            by = c("Genus_clean" = "GENUS")) %>%
+  mutate(lifestyle_group = case_when(
+    primary_lifestyle %in% c("soil_saprotroph", "litter_saprotroph",
+                              "wood_saprotroph", "unspecified_saprotroph",
+                              "dung_saprotroph", "pollen_saprotroph",
+                              "nectar/tap_saprotroph")         ~ "saprotroph",
+    primary_lifestyle == "plant_pathogen"                      ~ "plant pathogen",
+    primary_lifestyle %in% c("animal_parasite", "protistan_parasite") ~ "animal parasite",
+    primary_lifestyle == "animal_endosymbiont"                 ~ "animal endosymbiont",
+    primary_lifestyle %in% c("lichen_parasite", "sooty_mold")  ~ "mold",
+    primary_lifestyle == "mycoparasite"                        ~ "mycoparasite",
+    TRUE                                                        ~ "others"
+  )) %>%
+  mutate(lifestyle_group = ifelse(is.na(lifestyle_group), "others", lifestyle_group))
+
+indval_top5_lifestyle <- indval_top5 %>%
+  left_join(tax_traits_06 %>% select(asv_id, primary_lifestyle, lifestyle_group),
+            by = "asv_id")
+
+print(indval_top5_lifestyle, n = Inf)
+```
+Eigentlich müssen die nachgetragenen Species/ Gattungen auch in die Lifestyle Analyse mit einfließen
+--> Nachträglich speichern
+
+---
+
+## 8) Session Info
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```

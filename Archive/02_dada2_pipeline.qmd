@@ -1,0 +1,360 @@
+---
+title: "DADA2 – ASV Pipeline"
+subtitle: "Pilzgemeinschaften auf Käfern | Masterarbeit"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+## Übersicht
+
+Diese Pipeline verarbeitet die getrimmten ITS-Amplikon-Daten mit DADA2 und erstellt eine ASV-Tabelle für die weitere ökologische Analyse.
+
+> **Primer:** ITS3_KYO2 / ITS4_KYO2 | **truncLen:** R1 = 220, R2 = 180
+
+---
+
+## 1) Pakete laden
+
+```{r}
+#| label: packages
+
+library(dada2)
+library(ggplot2)
+library(ShortRead)
+
+```
+
+---
+
+## 2) Pfade & Dateien
+
+```{r}
+#| label: paths
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# Getrimmte Dateien (Input)
+trimmed_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis/Data/Processed/Trimmed"
+
+# Ausgabeordner für gefilterte Dateien
+filtered_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis/Data//ProcessedFiltered"
+dir.create(filtered_path, showWarnings = FALSE)
+
+# Dateien einlesen
+R1_trimmed <- sort(list.files(trimmed_path, pattern = "_R1_trimmed.fastq", full.names = TRUE))
+R2_trimmed <- sort(list.files(trimmed_path, pattern = "_R2_trimmed.fastq", full.names = TRUE))
+
+# Probennamen extrahieren
+sample_names <- sub("_R1_trimmed.fastq", "", basename(R1_trimmed))
+
+cat("Anzahl Proben:", length(sample_names), "\n")
+print(sample_names)
+```
+
+---
+
+## 3) Filter & Trimmen
+
+::: callout-note
+## Was passiert hier?
+- `truncLen` schneidet alle Reads auf eine einheitliche Länge
+- `maxEE` verwirft Reads mit zu vielen erwarteten Fehlern (2 = Standard)
+- `truncQ` schneidet ab wenn Qualität unter Q2 fällt
+:::
+
+```{r}
+#| label: filter-and-trim
+
+# Ausgabedateien benennen
+R1_filtered <- file.path(filtered_path, paste0(sample_names, "_R1_filtered.fastq.gz"))
+R2_filtered <- file.path(filtered_path, paste0(sample_names, "_R2_filtered.fastq.gz"))
+names(R1_filtered) <- sample_names
+names(R2_filtered) <- sample_names
+
+# Filtern & Trimmen
+out <- filterAndTrim(
+  fwd  = R1_trimmed,
+  filt = R1_filtered,
+  rev  = R2_trimmed,
+  filt.rev = R2_filtered,
+  truncLen = c(200, 160),   # (aus Qualitätsprofil)
+  maxEE    = c(2, 5),       # max. erwartete Fehler pro Read, bei R2 toleranter
+  truncQ   = 2,             # trimmen bei Q < 2
+  rm.phix  = TRUE,          # PhiX-Kontrollsequenzen entfernen
+  compress = TRUE,
+  multithread = FALSE       # Windows: muss FALSE sein!
+)
+
+# Übersicht
+out_df <- as.data.frame(out)
+out_df$sample <- sample_names
+out_df$percent_kept <- round(out_df$reads.out / out_df$reads.in * 100, 1)
+print(out_df[, c("sample", "reads.in", "reads.out", "percent_kept")])
+cat("\nDurchschnittlich behalten:", round(mean(out_df$percent_kept), 1), "%\n")
+
+```
+
+## Analyse von Proben, bei denen zu viel getrimmt wurde mit truncLen(220, 180), maxEE(2,2) --> Nur 45% der reads werden so behalten
+```{r}
+# Längenverteilung der getrimmten Reads für eine Problemprobe prüfen
+fq <- readFastq("C:/Users/user/Documents/Master_EnvironmentalSciences/Master Thesis/Data/Trimmed/ns2024-18-EC24-245-0016-FITS-B04-iA_S16_L001_R1_trimmed.fastq")
+hist(width(sread(fq)), breaks=50, main="Längenverteilung Probe 0016 R1", xlab="Länge (bp)")
+#Länge durchschnittlich 270 bp, truncLen daher kein Problem
+```
+```{r}
+# Qualitätsprofil nur für die Problemproben anschauen
+plotQualityProfile(R1_trimmed[16:18])  # Proben 0016, 0017, 0018
+```
+
+---
+#Weitermachen mit truncLen(200, 160), maxEE(2,5)--> maxEE für R2 (forward-reads) toleranter (5), wegen generell schlechterem Qualitätsprofil
+
+## 4) Fehlermodell lernen
+
+::: callout-note
+## Was passiert hier?
+DADA2 lernt aus deinen Daten selbst wie häufig bestimmte Sequenzfehler auftreten.
+Das Modell wird später genutzt um echte biologische Varianten von Sequenzfehlern zu unterscheiden.
+:::
+
+```{r}
+#| label: learn-errors
+
+set.seed(42)
+
+cat("Lerne Fehlermodell für R1...\n")
+err_R1 <- learnErrors(R1_filtered, multithread = FALSE)
+
+cat("Lerne Fehlermodell für R2...\n")
+err_R2 <- learnErrors(R2_filtered, multithread = FALSE)
+```
+
+### Fehlermodell visualisieren
+
+```{r}
+#| label: plot-errors
+#| fig-cap: "Fehlermodell R1 – Punkte = beobachtete Fehler, Linie = geschätztes Modell"
+
+plotErrors(err_R1, nominalQ = TRUE)
+```
+
+```{r}
+#| fig-cap: "Fehlermodell R2"
+
+plotErrors(err_R2, nominalQ = TRUE)
+```
+
+::: callout-tip
+## Gutes Fehlermodell erkennen
+Die schwarzen Punkte (beobachtete Fehler) sollten gut auf der roten Linie (Modell) liegen.
+:::
+
+---
+
+## 5) ASV-Inferenz (DADA2-Kernschritt)
+
+```{r}
+#| label: dada
+
+cat("ASV-Inferenz R1...\n")
+dada_R1 <- dada(R1_filtered, err = err_R1, multithread = FALSE)
+
+cat("ASV-Inferenz R2...\n")
+dada_R2 <- dada(R2_filtered, err = err_R2, multithread = FALSE)
+
+# Kurze Übersicht
+dada_R1[[1]]
+#R2 wesentlich schlechter 
+```
+
+---
+
+## 6) Reads zusammenfügen (Merge)
+
+::: callout-note
+## Was passiert hier?
+R1 und R2 werden anhand ihres überlappenden Bereichs zusammengefügt.
+`minOverlap = 12` bedeutet mindestens 12 bp Überlapp werden benötigt.
+:::
+
+```{r}
+#| label: merge
+
+mergers <- mergePairs(
+  dadaF      = dada_R2,
+  derepF     = R2_filtered,
+  dadaR      = dada_R1,
+  derepR     = R1_filtered,
+  minOverlap = 12,
+  maxMismatch = 1,        # war vorher 0
+  justConcatenate = TRUE, # R1+R2 zusammenfügen ohne Überlapp
+  verbose    = TRUE
+)
+
+# Merge-Statistik
+merge_stats <- data.frame(
+  sample        = sample_names,
+  reads_in      = sapply(mergers, function(x) sum(x$accept) + sum(!x$accept)),
+  reads_merged  = sapply(mergers, function(x) sum(x$accept)),
+  percent_merged = round(sapply(mergers, function(x) 
+                    sum(x$accept) / (sum(x$accept) + sum(!x$accept)) * 100), 1)
+)
+
+print(merge_stats)
+cat("\nDurchschnittlich gemergt:", round(mean(merge_stats$percent_merged), 1), "%\n")
+```
+
+---
+
+## 7) Sequenztabelle erstellen
+
+```{r}
+#| label: seqtab
+
+seqtab <- makeSequenceTable(mergers)
+
+cat("Dimensionen der Sequenztabelle:\n")
+cat("  Proben:", nrow(seqtab), "\n")
+cat("  ASVs:  ", ncol(seqtab), "\n")
+
+# Längenverteilung der ASVs
+seq_lengths <- nchar(getSequences(seqtab))
+cat("\nLängenverteilung der ASVs:\n")
+print(table(seq_lengths))
+```
+
+```{r, echo=FALSE}
+#| label: plot-lengths
+#| fig-cap: "Längenverteilung der zusammengefügten ASVs"
+
+hist(seq_lengths,
+     main = "ASV-Längenverteilung",
+     xlab = "Länge (bp)",
+     ylab = "Anzahl ASVs",
+     col  = "steelblue",
+     breaks = 30)
+#Einheitliche Länge wegen justConcatenate=TRUE --> Nicht informativ
+```
+
+::: callout-tip
+## Was ist eine typische ITS2-Länge?
+Mit ITS3_KYO2/ITS4_KYO2 werden ASVs zwischen ca. 150-400 bp erwartet
+Sehr kurze (<100 bp) oder sehr lange (>500 bp) ASVs sind oft Artefakte.
+:::
+
+---
+
+## 8) Chimären entfernen
+
+```{r}
+#| label: chimeras
+
+seqtab_nochim <- removeBimeraDenovo(
+  seqtab,
+  method      = "consensus",
+  multithread = FALSE,
+  verbose     = TRUE
+)
+
+cat("\nASVs vor Chimären-Entfernung: ", ncol(seqtab), "\n")
+cat("ASVs nach Chimären-Entfernung:", ncol(seqtab_nochim), "\n")
+cat("Reads behalten:", round(sum(seqtab_nochim) / sum(seqtab) * 100, 1), "%\n")
+```
+
+---
+
+## 9) Read-Tracking (Qualitätskontrolle über alle Schritte)
+
+```{r}
+#| label: track-reads
+
+getN <- function(x) sum(getUniques(x))
+
+track <- cbind(
+  out,
+  sapply(dada_R2, getN),
+  sapply(dada_R1, getN),
+  sapply(mergers, getN),
+  rowSums(seqtab_nochim)
+)
+
+colnames(track) <- c("Input", "Gefiltert", "dada_R2", "dada_R1", "Merged", "Ohne_Chimaeren")
+rownames(track) <- sample_names
+
+print(track)
+```
+
+::: callout-tip
+## Was sind gute Werte?
+- Von Input bis Ohne_Chimaeren sollten idealerweise **>50%** der Reads behalten werden
+:::
+
+---
+
+## 10) Ergebnisse speichern
+
+```{r}
+#| label: save
+
+output_dir <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis/Data/Final/DADA2_Output"
+dir.create(output_dir, showWarnings = FALSE)
+
+# Sequenztabelle speichern
+saveRDS(seqtab_nochim,
+        file.path(output_dir, "seqtab_nochim.rds"))
+
+# Als CSV exportieren (Proben x ASVs)
+write.csv(t(seqtab_nochim),
+          file.path(output_dir, "ASV_table.csv"))
+
+# Track-Tabelle speichern
+write.csv(track,
+          file.path(output_dir, "read_tracking.csv"))
+
+cat("Gespeichert in:", output_dir, "\n")
+cat("  - seqtab_nochim.rds  (für weitere R-Analysen)\n")
+cat("  - ASV_table.csv      (Proben x ASVs)\n")
+cat("  - read_tracking.csv  (Read-Tracking)\n")
+```
+
+---
+
+## Zusammenfassung
+
+```{r}
+#| label: summary
+
+cat("=== DADA2 Pipeline abgeschlossen ===\n\n")
+cat("Proben analysiert:    ", nrow(seqtab_nochim), "\n")
+cat("ASVs gefunden:        ", ncol(seqtab_nochim), "\n")
+cat("Reads behalten (ges.):", round(sum(seqtab_nochim) / sum(out[,1]) * 100, 1), "%\n")
+cat("\nNächster Schritt: Taxonomische Klassifizierung mit UNITE-Datenbank\n")
+```
+
+---
+
+## Sessioninfo
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```
+## Dada2 Version
+```{r}
+R.version.string        # R version
+packageVersion("dada2") # DADA2 version
+```
+

@@ -1,0 +1,849 @@
+---
+title: "Beetle-Fungi Community Analysis"
+subtitle: "Fungal Traits & Lifestyle Network"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+    fig-width: 12
+    fig-height: 7
+execute:
+  warning: false
+  message: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Pakete laden
+
+```{r}
+#| label: packages
+#| message: false
+#| warning: false
+
+library(phyloseq)
+library(vegan)
+library(tidyverse)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(microeco)
+library(indicspecies)
+library(pairwiseAdonis)
+library(UpSetR)
+library(reshape2)
+library(ggvenn)
+library(patchwork)
+library(stringr)
+library(ggalluvial)
+library(bipartite)
+library(cowplot)
+library(openxlsx)
+```
+
+---
+
+## Daten laden
+
+```{r}
+#| label: load-data
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# ── Phyloseq-Objekt (gefiltert: ohne Incertae sedis) ──────────────────────────
+ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v2/ps_filtered.rds"))
+
+# ── Beetle traits ─────────────────────────────────────────────────────────────
+beetle_traits <- read.csv(
+  "~/Master_EnvironmentalSciences/Master_Thesis/Data/Metadata/beetle_traits.csv"
+)
+
+# ── Fungal traits ─────────────────────────────────────────────────────────────
+data(fungi_func_FungalTraits)
+
+# ── OTU-Tabelle (gefiltert, für Heatmap & Netzwerk) ───────────────────────────
+otu_mat_new <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_f.rds"))
+
+# ── Metadaten ─────────────────────────────────────────────────────────────────
+meta_df <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("sample") %>%
+  mutate(sample = gsub("^X", "", sample))
+
+# ── ASV-Tabelle direkt aus ps (Basis für alle Trait-Analysen) ─────────────────
+otu_ps <- as.data.frame(otu_table(ps))  # Sequenzen ×
+
+asv_to_otu <- readRDS(file.path(base_path, "/Data/Final/OTU_v2/asv_to_otu.rds"))
+
+cat("Proben:", nsamples(ps), "\n")
+cat("ASVs nach Filter:", ntaxa(ps), "\n")
+cat("OTUs nach Filter:", ncol(otu_mat_new), "\n")
+```
+
+---
+
+## Setup: Farben & Reihenfolge
+
+```{r}
+#| label: setup
+
+family_colors <- c(
+  "Carabidae"     = "grey",
+  "Buprestidae"   = "#C1714F",
+  "Tenebrionidae" = "#6A9C6A",
+  "Cerambycidae"  = "#E0A96D",
+  "Curculionidae" = "#8C6D9E"
+)
+
+lifestyle_colors <- c(
+  "saprotroph"          = "#F0E442",
+  "plant pathogen"      = "#009E73",
+  "mycoparasite"        = "#CC79A7",
+  "animal parasite"     = "#0070A2",
+  "animal endosymbiont" = "#8C6D7A",
+  "mold"                = "darkmagenta",
+  "others"              = "#999999"
+)
+
+species_order <- c(
+  "Anthaxia fulgurans",
+  "Anthaxia quadripunctata",
+  "Chrysobothris affinis",
+  "Buprestis haemorrhoidalis",
+  "Rhagium bifasciatum",
+  "Rhagium inquisitor",
+  "Rhagium mordax",
+  "Pachytodes cerambyciformis",
+  "Rutpela maculata",
+  "Stenurella melanura",
+  "Bolitophagus reticulatus",
+  "Ips typographus",
+  "Pterostichus aethiops"
+)
+
+family_abbr <- c(
+  "Buprestidae"   = "BU",
+  "Cerambycidae"  = "CE",
+  "Tenebrionidae" = "TE",
+  "Curculionidae" = "CU",
+  "Carabidae"     = "CA"
+)
+```
+
+---
+
+## Fungal Traits integrieren
+
+```{r}
+#| label: fungal-traits
+# ── Taxonomie aus ps (OHNE Filter – alle ASVs behalten) ───────────────────────
+tax_df <- as.data.frame(tax_table(ps))
+tax_df$sequence      <- rownames(tax_df)
+tax_df$Genus_clean   <- gsub("g__", "", tax_df$Genus)
+tax_df$Species_clean <- gsub("s__", "", tax_df$Species)
+
+# ── FungalTraits mergen ───────────────────────────────────────────────────────
+tax_traits <- merge(tax_df, fungi_func_FungalTraits,
+                    by.x = "Genus_clean", by.y = "GENUS",
+                    all.x = TRUE)
+
+cat("ASVs mit Trait-Info:", sum(!is.na(tax_traits$primary_lifestyle)), "\n")
+cat("ASVs ohne Trait-Info:", sum(is.na(tax_traits$primary_lifestyle)), "\n")
+
+# ── Lifestyle-Klassifizierung ─────────────────────────────────────────────────
+tax_traits$lifestyle_group <- case_when(
+  tax_traits$primary_lifestyle %in% c("soil_saprotroph", "litter_saprotroph",
+                                       "wood_saprotroph", "unspecified_saprotroph",
+                                       "dung_saprotroph", "pollen_saprotroph",
+                                       "nectar/tap_saprotroph")         ~ "saprotroph",
+  tax_traits$primary_lifestyle == "plant_pathogen"                      ~ "plant pathogen",
+  tax_traits$primary_lifestyle %in% c("animal_parasite",
+                                       "protistan_parasite")            ~ "animal parasite",
+  tax_traits$primary_lifestyle == "animal_endosymbiont"                 ~ "animal endosymbiont",
+  tax_traits$primary_lifestyle %in% c("lichen_parasite", "sooty_mold") ~ "mold",
+  tax_traits$primary_lifestyle == "mycoparasite"                        ~ "mycoparasite",
+  TRUE                                                                   ~ "others"
+)
+tax_traits$lifestyle_group[is.na(tax_traits$lifestyle_group)] <- "others"
+
+# ── Animal-associated ASVs ────────────────────────────────────────────────────
+animal_seqs <- tax_traits$sequence[
+  grepl("arthropod|animal|invertebrate|opportunistic",
+        tax_traits$Animal_biotrophic_capacity_template,
+        ignore.case = TRUE) &
+  !is.na(tax_traits$Animal_biotrophic_capacity_template) &
+  tax_traits$Animal_biotrophic_capacity_template != ""
+]
+cat("Animal-associated ASVs:", length(animal_seqs), "\n")
+
+# ── Deduplizierte Tabellen auf Sequenz-Basis ──────────────────────────────────
+tax_traits_dedup_ps <- tax_traits %>%
+  distinct(sequence, .keep_all = TRUE) %>%
+  mutate(is_animal = sequence %in% animal_seqs,
+         group     = ifelse(is_animal, "animal-associated", "opportunistic"))
+
+tax_traits_unique_ps <- tax_traits %>%
+  distinct(sequence, .keep_all = TRUE)
+
+# ── Kontrolle: Endoconidiophora ───────────────────────────────────────────────
+tax_traits_dedup_ps %>%
+  filter(grepl("Endoconidiophora", Genus_clean)) %>%
+  select(sequence, Genus_clean, group, is_animal, lifestyle_group)
+```
+
+---
+
+## Proportion animal-associated OTUs per beetle
+
+```{r}
+#| label: proportion-aa
+
+# ── Reads-basiert ─────────────────────────────────────────────────────────────
+reads_df <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(tax_traits_dedup_ps %>% select(sequence, group), by = "sequence") %>%
+  mutate(group = ifelse(is.na(group), "opportunistic", group)) %>%
+  left_join(meta_df %>% select(sample, beetle_species, family), by = "sample") %>%
+  group_by(beetle_species, family) %>%
+  mutate(total = sum(reads)) %>%
+  group_by(beetle_species, family, group) %>%
+  summarise(rel = sum(reads) / first(total), .groups = "drop") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species),
+         beetle_species = factor(beetle_species, levels = species_order))
+
+# ── P/A-basiert ───────────────────────────────────────────────────────────────
+pa_df <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  mutate(reads = 1) %>%
+  left_join(tax_traits_dedup_ps %>% select(sequence, group), by = "sequence") %>%
+  mutate(group = ifelse(is.na(group), "opportunistic", group)) %>%
+  left_join(meta_df %>% select(sample, beetle_species, family), by = "sample") %>%
+  group_by(beetle_species, family) %>%
+  mutate(total = sum(reads)) %>%
+  group_by(beetle_species, family, group) %>%
+  summarise(rel = sum(reads) / first(total), .groups = "drop") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species),
+         beetle_species = factor(beetle_species, levels = species_order))
+
+cat("Reads-df Zeilen:", nrow(reads_df), "\n")
+cat("PA-df Zeilen:", nrow(pa_df), "\n")
+```
+## RESULTS: Lifestyle
+
+```{r}
+cat("Gesamt ASVs (gefiltert):", ntaxa(ps), "\n")
+
+cat("Auf Genus-Ebene klassifiziert:", 
+    sum(!is.na(tax_df$Genus_clean) & tax_df$Genus_clean != ""), "\n")
+
+cat("Mit FungalTraits Info:", 
+    sum(!is.na(tax_traits$primary_lifestyle)), "\n")
+
+# Lifestyle-Counts (dedupliziert auf Sequenz-Ebene)
+tax_traits %>%
+  distinct(sequence, .keep_all = TRUE) %>%
+  count(lifestyle_group, name = "n_asvs") %>%
+  arrange(desc(n_asvs)) %>%
+  print()
+
+cat("Animal-associated ASVs:", length(animal_seqs), "\n")
+
+# PA-Anteile
+pa_df %>%
+  filter(group == "animal-associated") %>%
+  arrange(desc(rel)) %>%
+  select(beetle_species, family, rel) %>%
+  mutate(rel_pct = scales::percent(rel, accuracy = 0.1)) %>%
+  print()
+```
+```{r}
+# ── OTU-Traits: Centroid-ASV bestimmt den Trait ───────────────────────────────
+# asv_to_otu: Name = ASV-ID, Wert = OTU-ID (Centroid)
+# Centroid-ASVs sind die ASVs wo asv_id == otu_id
+
+asv_to_otu_df <- data.frame(
+  asv_id = names(asv_to_otu),
+  otu_id = as.character(asv_to_otu)
+)
+
+# Nur Centroids (asv_id == otu_id) → das ist die repräsentative Sequenz
+centroids <- asv_to_otu_df %>%
+  filter(asv_id == otu_id) %>%
+  left_join(data.frame(
+    asv_id   = paste0("ASV", seq_along(taxa_names(ps))),
+    sequence = taxa_names(ps)), 
+    by = "asv_id") %>%
+  left_join(tax_traits_unique_ps, by = "sequence") %>%
+  filter(otu_id %in% colnames(otu_mat_new))
+
+cat("OTUs mit Centroid-Traits:", nrow(centroids), "\n")
+
+centroids %>%
+  count(lifestyle_group, name = "n_otus") %>%
+  arrange(desc(n_otus)) %>%
+  print()
+
+# NAs zu "others" machen
+centroids <- centroids %>%
+  mutate(lifestyle_group = ifelse(is.na(lifestyle_group), "others", lifestyle_group))
+
+centroids %>%
+  count(lifestyle_group, name = "n_otus") %>%
+  arrange(desc(n_otus)) %>%
+  print()
+
+# Animal-associated OTUs
+animal_otus_centroids <- centroids$otu_id[centroids$sequence %in% animal_seqs]
+cat("Animal-associated OTUs:", length(animal_otus_centroids), "\n")
+```
+
+```{r}
+#| label: plot-proportion-aa
+
+group_colors <- c("animal-associated" = "#D55E00",
+                  "opportunistic"     = "bisque3")
+
+make_group_plot <- function(df, title) {
+  df <- df %>%
+    mutate(beetle_species = factor(beetle_species, levels = species_order),
+           family = factor(family_abbr[family],
+                           levels = family_abbr[c("Buprestidae", "Cerambycidae",
+                                                   "Tenebrionidae", "Curculionidae",
+                                                   "Carabidae")]))
+  ggplot(df, aes(x = beetle_species, y = rel, fill = group)) +
+    geom_bar(stat = "identity", color = "white", width = 0.7) +
+    geom_text(aes(label = ifelse(rel > 0.03,
+                                 scales::percent(rel, accuracy = 1), "")),
+              position = position_stack(vjust = 0.5),
+              size = 3.5, color = "white", fontface = "bold") +
+    scale_fill_manual(values = group_colors,
+                      labels = c("animal-associated" = "Animal-associated OTUs",
+                                 "opportunistic"     = "Passively associated OTUs")) +
+    scale_y_continuous(labels = scales::percent) +
+    facet_grid(. ~ family, scales = "free_x", space = "free") +
+    labs(x = NULL, y = "Relative proportion", fill = "", title = title) +
+    theme_minimal(base_size = 14) +
+    theme(
+      axis.text.x          = element_text(angle = 45, hjust = 1, face = "italic"),
+      strip.text.x         = element_text(size = 14, face = "bold"),
+      legend.position      = "bottom",
+      legend.justification = "left")
+}
+
+p_pa    <- make_group_plot(pa_df,    "")
+p_reads <- make_group_plot(reads_df, "")
+
+p_pa
+p_reads
+
+#ggsave(file.path(base_path, "Results/Figures/animal_vs_opportunistic_pa.pdf"),
+       plot = p_pa, width = 8, height = 6, bg = "white")
+```
+
+### RESULTS: Proportion AF/AA
+
+```{r}
+#| label: results-proportion
+
+pa_df %>%
+  filter(group == "animal-associated") %>%
+  arrange(desc(rel)) %>%
+  select(beetle_species, family, rel) %>%
+  mutate(rel_pct = scales::percent(rel, accuracy = 0.1)) %>%
+  print()
+```
+
+---
+
+## Lifestyle-Analyse
+
+```{r}
+#| label: lifestyle-functions
+
+# ── Einheitliche make_lifestyle_long (ps-basiert) ─────────────────────────────
+make_lifestyle_long <- function(pa = FALSE, animal_only = FALSE) {
+  
+  if (animal_only) {
+    mat <- otu_ps[rownames(otu_ps) %in% animal_seqs, ]
+  } else {
+    mat <- otu_ps
+  }
+  
+  mat %>%
+    rownames_to_column("sequence") %>%
+    pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+    mutate(sample = gsub("^X", "", sample)) %>%
+    filter(reads > 0) %>%
+    { if (pa) mutate(., reads = 1) else . } %>%
+    left_join(tax_traits_unique_ps %>% select(sequence, lifestyle_group),
+              by = "sequence") %>%
+    left_join(meta_df %>% select(sample, beetle_species, family),
+              by = "sample") %>%
+    mutate(lifestyle_group = ifelse(is.na(lifestyle_group), "others",
+                                    lifestyle_group)) %>%
+    group_by(beetle_species, family, lifestyle_group) %>%
+    summarise(reads = sum(reads), .groups = "drop") %>%
+    group_by(beetle_species) %>%
+    mutate(rel = reads / sum(reads)) %>%
+    ungroup() %>%
+    mutate(
+      beetle_species  = factor(gsub("_", " ", beetle_species),
+                               levels = species_order),
+      family          = factor(family_abbr[family],
+                               levels = family_abbr[c("Buprestidae", "Cerambycidae",
+                                                       "Tenebrionidae", "Curculionidae",
+                                                       "Carabidae")]),
+      lifestyle_group = factor(lifestyle_group,
+                               levels = rev(c("saprotroph", "plant pathogen",
+                                              "mycoparasite", "animal parasite",
+                                              "animal endosymbiont", "mold", "others")))
+    )
+}
+
+make_lifestyle_plot <- function(df, title) {
+  ggplot(df, aes(x = beetle_species, y = rel, fill = lifestyle_group)) +
+    geom_col(color = "white", width = 0.7) +
+    scale_fill_manual(values = lifestyle_colors,
+                      breaks = c("saprotroph", "plant pathogen", "mycoparasite",
+                                 "animal parasite", "animal endosymbiont",
+                                 "mold", "others")) +
+    scale_y_continuous(labels = scales::percent) +
+    facet_grid(. ~ family, scales = "free_x", space = "free") +
+    labs(x = NULL, y = "Relative proportion",
+         fill = "Fungal lifestyle", title = title) +
+    theme_minimal(base_size = 14) +
+    theme(
+      axis.text.x           = element_text(angle = 45, hjust = 1, face = "italic"),
+      strip.text.x          = element_text(size = 14, face = "bold"),
+      legend.position       = "bottom",
+      legend.title.position = "top",
+      legend.text           = element_text(size = 14),
+      legend.title          = element_text(size = 14, face = "bold"),
+      legend.key.size       = unit(1, "cm")
+    )
+}
+```
+
+### Lifestyle Barplot (P/A)
+
+```{r}
+#| label: lifestyle-barplot
+
+p_pa_ls_hoch <- make_lifestyle_long(pa = TRUE) %>%
+  make_lifestyle_plot(title = "")
+
+p_pa_ls_hoch
+
+```
+
+### Animal-only Lifestyle Barplot
+
+```{r}
+#| label: lifestyle-animal-barplot
+
+p_pa_ls_animal <- make_lifestyle_long(pa = TRUE, animal_only = TRUE) %>%
+  make_lifestyle_plot(title = "Animal-associated fungi only")
+
+p_pa_ls_animal
+
+```
+
+### Alluvial Plot: AF → AA
+
+```{r}
+#| label: alluvial-plot
+
+lifestyle_combined <- bind_rows(
+  make_lifestyle_long(pa = TRUE, animal_only = FALSE) %>%
+    mutate(subset = "All fungi"),
+  make_lifestyle_long(pa = TRUE, animal_only = TRUE) %>%
+    mutate(subset = "Animal-associated fungi")
+) %>%
+  mutate(
+    subset          = factor(subset, levels = c("All fungi",
+                                                "Animal-associated fungi")),
+    lifestyle_group = factor(lifestyle_group,
+                             levels = c("saprotroph", "plant pathogen",
+                                        "mycoparasite", "animal parasite",
+                                        "animal endosymbiont", "mold", "others"))
+  )
+
+make_alluvial_plot <- function(data, family_name, title = family_name,
+                                show_legend = FALSE) {
+  ggplot(data %>% filter(family == family_name),
+         aes(x = subset, y = rel,
+             alluvium = lifestyle_group,
+             stratum  = lifestyle_group,
+             fill     = lifestyle_group)) +
+    geom_alluvium(alpha = 0.6) +
+    geom_stratum() +
+    scale_fill_manual(values = lifestyle_colors) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_discrete(labels = c("All fungi"               = "AF",
+                                 "Animal-associated fungi" = "AA")) +
+    facet_wrap(~ beetle_species, nrow = 1,
+               labeller = labeller(beetle_species = label_wrap_gen(12))) +
+    labs(x = NULL, y = title, fill = "Fungal lifestyle") +
+    theme_minimal(base_size = 11) +
+    theme(
+      strip.text      = element_text(face = "italic", size = 14),
+      axis.text.x     = element_text(size = 14),
+      legend.position = if (show_legend) "bottom" else "none",
+      legend.text     = element_text(size = 14),
+      legend.title    = element_text(size = 14, face = "bold"),
+      legend.key.size = unit(1, "cm"),
+      axis.title.y    = element_text(size = 14, face = "bold")
+    )
+}
+
+plot_bup <- make_alluvial_plot(lifestyle_combined, "BU", title = "Buprestidae")
+plot_cer <- make_alluvial_plot(lifestyle_combined, "CE", title = "Cerambycidae")
+plot_exo <- lifestyle_combined %>%
+  filter(family %in% c("TE", "CU", "CA")) %>%
+  mutate(family = "Other") %>%
+  make_alluvial_plot("Other", show_legend = TRUE)
+
+combined <- plot_bup / plot_cer / plot_exo +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+combined
+
+ggsave(file.path(base_path, "Results/Figures/lifestyle_alluvial_AF_vs_AA.pdf"),
+       plot = combined, width = 14, height = 12, bg = "white")
+```
+
+### Alluvial Plot: Ohne Saprotrophe (Zoom)
+
+```{r}
+#| label: alluvial-nosap
+
+lifestyle_combined_nosap <- lifestyle_combined %>%
+  filter(lifestyle_group != "saprotroph") %>%
+  group_by(beetle_species, family, subset) %>%
+  mutate(rel = rel / sum(rel)) %>%
+  ungroup()
+
+plot_bup_nosap <- make_alluvial_plot(lifestyle_combined_nosap, "BU",
+                                     title = "Buprestidae")
+plot_cer_nosap <- make_alluvial_plot(lifestyle_combined_nosap, "CE",
+                                     title = "Cerambycidae")
+plot_exo_nosap <- lifestyle_combined_nosap %>%
+  filter(family %in% c("TE", "CU", "CA")) %>%
+  mutate(family = "Other") %>%
+  make_alluvial_plot("Other", title = "Other", show_legend = TRUE)
+
+combined_nosap <- plot_bup_nosap / plot_cer_nosap / plot_exo_nosap +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+combined_nosap
+
+ggsave(file.path(base_path, "Results/Figures/lifestyle_alluvial_AF_vs_AA_nosap.pdf"),
+       plot = combined_nosap, width = 14, height = 12, bg = "white")
+```
+
+```{r}
+lifestyle_combined_zoom <- lifestyle_combined %>%
+  filter(lifestyle_group != "saprotroph") %>%
+  # Alle Kombinationen explizit erstellen
+  group_by(beetle_species, family) %>%
+  group_modify(~ {
+    tidyr::expand_grid(
+      lifestyle_group = unique(lifestyle_combined$lifestyle_group[
+        lifestyle_combined$lifestyle_group != "saprotroph"]),
+      subset = c("All fungi", "Animal-associated fungi")
+    ) %>%
+      left_join(.x, by = c("lifestyle_group", "subset")) %>%
+      mutate(reads = replace_na(reads, 0),
+             rel   = replace_na(rel, 0))
+  }) %>%
+  ungroup() %>%
+  mutate(
+    lifestyle_group = factor(lifestyle_group,
+                             levels = rev(c("plant pathogen", "mycoparasite",
+                                            "animal parasite", "animal endosymbiont",
+                                            "mold", "others"))),
+    subset = factor(subset, levels = c("All fungi", "Animal-associated fungi"))
+  )
+# KEINE Neu-Normalisierung!
+
+make_alluvial_plot_zoom <- function(data, family_name, title = family_name,
+                                    show_legend = FALSE) {
+  ggplot(data %>% filter(family == family_name),
+         aes(x = subset, y = rel,
+             alluvium = lifestyle_group,
+             stratum  = lifestyle_group,
+             fill     = lifestyle_group)) +
+    geom_alluvium(alpha = 0.6, min.y=0) +
+    geom_stratum() +
+    scale_fill_manual(values = lifestyle_colors) +
+    scale_y_continuous(labels = scales::percent,
+                       limits = c(0, 0.5)) +  # Zoom auf 0-50%
+    scale_x_discrete(labels = c("All fungi"               = "AF",
+                                 "Animal-associated fungi" = "AA")) +
+    facet_wrap(~ beetle_species, nrow = 1,
+               labeller = labeller(beetle_species = label_wrap_gen(12))) +
+    labs(x = NULL, y = title, fill = "Fungal lifestyle") +
+    theme_minimal(base_size = 11) +
+    theme(
+      strip.text      = element_text(face = "italic", size = 14),
+      axis.text.x     = element_text(size = 14),
+      legend.position = if (show_legend) "bottom" else "none",
+      legend.text     = element_text(size = 14),
+      legend.title    = element_text(size = 14, face = "bold"),
+      legend.key.size = unit(1, "cm"),
+      axis.title.y    = element_text(size = 14, face = "bold")
+    )
+}
+
+plot_bup_zoom <- make_alluvial_plot_zoom(lifestyle_combined_zoom, "BU",
+                                         title = "Buprestidae")
+plot_cer_zoom <- make_alluvial_plot_zoom(lifestyle_combined_zoom, "CE",
+                                         title = "Cerambycidae")
+plot_exo_zoom <- lifestyle_combined_zoom %>%
+  filter(family %in% c("TE", "CU", "CA")) %>%
+  mutate(family = "Other") %>%
+  make_alluvial_plot_zoom("Other", title = "Other", show_legend = TRUE)
+
+combined_zoom <- plot_bup_zoom / plot_cer_zoom / plot_exo_zoom +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+combined_zoom
+
+ggsave(file.path(base_path, "Results/Figures/lifestyle_alluvial_AF_vs_AA_zoom.pdf"),
+       plot = combined_zoom, width = 14, height = 12, bg = "white")
+```
+
+## RESULTS: Anteil an AA plant pathogens pro Art in absteigender Reihenfolge
+
+```{r}
+lifestyle_combined %>%
+  filter(lifestyle_group == "plant pathogen" & 
+         subset == "Animal-associated fungi") %>%
+  arrange(desc(rel)) %>%
+  select(beetle_species, family, rel) %>%
+  mutate(rel_pct = scales::percent(rel, accuracy = 0.1)) %>%
+  print()
+```
+
+## RESULTS: Lifestyle-Statistiken
+
+```{r}
+#| label: results-lifestyle
+
+# Saprotrophen-Anteil AF vs AA
+lifestyle_combined %>%
+  filter(lifestyle_group == "saprotroph") %>%
+  select(beetle_species, subset, rel) %>%
+  pivot_wider(names_from = subset, values_from = rel) %>%
+  mutate(diff = `Animal-associated fungi` - `All fungi`) %>%
+  summarise(
+    mean_AF  = mean(`All fungi`, na.rm = TRUE),
+    mean_AA  = mean(`Animal-associated fungi`, na.rm = TRUE),
+    min_AF   = min(`All fungi`, na.rm = TRUE),
+    max_AF   = max(`All fungi`, na.rm = TRUE),
+    min_AA   = min(`Animal-associated fungi`, na.rm = TRUE),
+    max_AA   = max(`Animal-associated fungi`, na.rm = TRUE)
+  ) %>%
+  mutate(across(everything(), ~ scales::percent(., accuracy = 0.1))) %>%
+  print()
+
+# Kategorien die in AA zunehmen
+lifestyle_combined %>%
+  filter(lifestyle_group != "saprotroph") %>%
+  group_by(lifestyle_group, subset) %>%
+  summarise(mean_rel = mean(rel, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = subset, values_from = mean_rel) %>%
+  mutate(diff = `Animal-associated fungi` - `All fungi`) %>%
+  arrange(desc(diff)) %>%
+  mutate(across(where(is.numeric), ~ scales::percent(., accuracy = 0.1))) %>%
+  print()
+
+# Bei welchen Käfern ist der Anteil an AA plant pathogens hoch?
+lifestyle_combined %>%
+  filter(lifestyle_group == "plant pathogen") %>%
+  select(beetle_species, subset, rel) %>%
+  pivot_wider(names_from = subset, values_from = rel, values_fill = 0) %>%
+  mutate(
+    diff   = `Animal-associated fungi` - `All fungi`,
+    AF_pct = scales::percent(`All fungi`, accuracy = 0.1),
+    AA_pct = scales::percent(`Animal-associated fungi`, accuracy = 0.1),
+    diff_pct = scales::percent(diff, accuracy = 0.1)
+  ) %>%
+  arrange(desc(`Animal-associated fungi`)) %>%
+  print()
+
+# Differences between species in remaining guilds
+# Lifestyle-Anteile pro Käferart in AA (mit Saprotrophen)
+lifestyle_combined %>%
+  filter(subset == "Animal-associated fungi") %>%
+  select(beetle_species, family, lifestyle_group, rel) %>%
+  mutate(rel_pct = scales::percent(rel, accuracy = 0.1)) %>%
+  pivot_wider(names_from = lifestyle_group,
+              values_from = rel_pct,
+              values_fill = "0.0%") %>%
+  print(n=100)
+
+```
+## Alluvial Plot: Based on reads (Appendix)
+
+```{r}
+lifestyle_combined_reads <- bind_rows(
+  make_lifestyle_long(pa = FALSE, animal_only = FALSE) %>%
+    mutate(subset = "All fungi"),
+  make_lifestyle_long(pa = FALSE, animal_only = TRUE) %>%
+    mutate(subset = "Animal-associated fungi")
+) %>%
+  mutate(
+    subset          = factor(subset, levels = c("All fungi",
+                                                "Animal-associated fungi")),
+    lifestyle_group = factor(lifestyle_group,
+                             levels = c("saprotroph", "plant pathogen",
+                                        "mycoparasite", "animal parasite",
+                                        "animal endosymbiont", "mold", "others"))
+  )
+
+plot_bup_reads <- make_alluvial_plot(lifestyle_combined_reads, "BU", title = "Buprestidae")
+plot_cer_reads <- make_alluvial_plot(lifestyle_combined_reads, "CE", title = "Cerambycidae")
+plot_exo_reads <- lifestyle_combined_reads %>%
+  filter(family %in% c("TE", "CU", "CA")) %>%
+  mutate(family = "Other") %>%
+  make_alluvial_plot("Other", show_legend = TRUE)
+
+combined_reads <- plot_bup_reads / plot_cer_reads / plot_exo_reads +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+combined_reads
+
+ggsave(file.path(base_path, "Results/Figures/lifestyle_alluvial_AF_vs_AA_reads.pdf"),plot = combined_reads, width = 14, height = 12, bg = "white")
+```
+
+---
+
+## Ips typographus – Artenliste
+
+```{r}
+#| label: ips-list
+#| echo: FALSE
+
+ips_samples <- meta_df$sample[meta_df$beetle_species == "Ips_typographus"]
+
+tax_ps <- as.data.frame(tax_table(ps)) %>%
+  mutate(
+    Genus_clean   = gsub("g__", "", Genus),
+    Species_clean = gsub("s__", "", Species),
+    Phylum        = gsub("p__", "", Phylum),
+    Class         = gsub("c__", "", Class),
+    Order         = gsub("o__", "", Order),
+    Family        = gsub("f__", "", Family)
+  )
+
+ips_list <- otu_ps[, colnames(otu_ps) %in% ips_samples] %>%
+  rowSums() %>%
+  as.data.frame() %>%
+  setNames("total_reads") %>%
+  rownames_to_column("ASV") %>%
+  filter(total_reads > 0) %>%
+  arrange(desc(total_reads)) %>%
+  left_join(tax_ps %>% rownames_to_column("ASV"), by = "ASV") %>%
+  mutate(species_label = ifelse(
+    !is.na(Species_clean) & Species_clean != "",
+    paste(Genus_clean, Species_clean),
+    ifelse(!is.na(Genus_clean), paste0(Genus_clean, " sp."), "unclassified")
+  )) %>%
+  select(ASV, species_label, Phylum, Class, Order, Family,
+         Genus_clean, Species_clean, total_reads)
+
+cat("Anzahl ASVs bei Ips typographus:", nrow(ips_list), "\n")
+print(head(ips_list, 20))
+
+write.xlsx(ips_list,
+           file.path(base_path, "Data/Final/Ips_typographus_fungal_list.xlsx"),
+           sheetName = "Ips typographus fungi",
+           rowNames  = FALSE)
+```
+
+---
+
+## Netzwerkanalyse (Bipartite Web)
+
+```{r}
+#| label: bipartite-network
+
+bipartite_df <- otu_ps %>%
+  rownames_to_column("ASV") %>%
+  pivot_longer(-ASV, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(tax_ps %>% rownames_to_column("ASV") %>%
+              select(ASV, Genus_clean), by = "ASV") %>%
+  left_join(meta_df %>% select(sample, beetle_species), by = "sample") %>%
+  filter(!is.na(Genus_clean) & Genus_clean != "") %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
+  group_by(beetle_species, Genus_clean) %>%
+  summarise(reads = sum(reads), .groups = "drop")
+
+# Top 5 Genera pro Käferart
+top_genera <- bipartite_df %>%
+  group_by(beetle_species, Genus_clean) %>%
+  summarise(total = sum(reads), .groups = "drop") %>%
+  group_by(beetle_species) %>%
+  slice_max(total, n = 5) %>%
+  ungroup() %>%
+  pull(Genus_clean) %>%
+  unique()
+
+bipartite_df <- bipartite_df %>%
+  filter(Genus_clean %in% top_genera)
+
+bip_mat <- bipartite_df %>%
+  pivot_wider(names_from  = Genus_clean,
+              values_from = reads,
+              values_fill = 0) %>%
+  column_to_rownames("beetle_species") %>%
+  as.matrix()
+
+bip_mat_pa <- (bip_mat > 0) * 1
+bip_mat_pa_sorted <- sortweb(bip_mat_pa, sort.order = "ca")
+
+n_beetles   <- nrow(bip_mat_sorted)
+beetle_cols <- RColorBrewer::brewer.pal(min(n_beetles, 12), "Set3")
+if (n_beetles > 12) beetle_cols <- colorRampPalette(beetle_cols)(n_beetles)
+
+pdf(file.path(base_path, "Results/Figures/bipartite_web_sorted_n5.pdf"), width = 35, height = 12)
+
+plotweb(bip_mat_sorted,
+        srt               = -45,
+        higher_color      = "grey80",
+        higher_text_color = "black",
+        lower_color       = beetle_cols,
+        lower_text_color  = "black",
+        link_color        = "lower",
+        link_alpha        = 0.5,
+        text_size         = 1.5,
+        box_size          = 0.07,
+        higher_italic     = TRUE,
+        lower_italic      = TRUE,
+        mar               = c(1, 6, 2, 2))
+       
+  
+dev.off()
+
+cat("Bipartite web gespeichert.\n")
+```
+
+
+
+

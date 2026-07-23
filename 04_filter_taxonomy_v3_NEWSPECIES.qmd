@@ -1,0 +1,734 @@
+---
+title: "04_QC_Phyloseq"
+subtitle: "Quality Control, Read Tracking & Taxonomic Composition"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+## Pakete laden
+
+```{r}
+#| label: packages
+#| message: false
+
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(forcats)
+library(patchwork)
+library(ggrepel)
+library(scico)
+library(vegan)
+
+
+filter <- dplyr::filter
+count  <- dplyr::count
+```
+
+---
+
+## Daten laden
+
+```{r}
+#| label: load-data
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# ── Rohes, ungefiltertes Phyloseq-Objekt aus 03_build_phyloseq_v3.qmd laden ──
+# WICHTIG (Fix): NICHT ps_filtered.rds laden! Dieses Skript speichert am Ende
+# selbst nach ps_filtered.rds -- würde man diese Datei hier als Eingabe laden,
+# liest Skript 04 bei jedem erneuten Durchlauf seine eigene, bereits
+# verarbeitete Ausgabe erneut ein (inkl. der bereits eingetragenen family-
+# Spalte) und häuft bei jedem Re-Run weitere family.x/family.y-Duplikate an.
+# Skript 04 startet daher immer vom unveränderten Rohzustand aus Skript 03.
+ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v3/phyloseq_all.rds"))
+
+meta_df <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("sample") %>%
+  mutate(sample = gsub("^X", "", sample))
+
+cat("Proben:", nsamples(ps), "\n")
+cat("ASVs:", ntaxa(ps), "\n")
+summary(sample_sums(ps))
+
+# ── ASV-Matrix (Proben x ASVs) neu aufbauen ─────────────────────────────────
+otu_ps <- as.data.frame(otu_table(ps))
+if (!taxa_are_rows(ps)) {
+  otu_ps <- as.data.frame(t(otu_ps))
+}
+
+# ── Taxonomie-Tabelle mit sequence-Spalte ────────────────────────────────────
+tax_df <- as.data.frame(tax_table(ps))
+tax_df$sequence      <- rownames(tax_df)
+tax_df$Genus_clean   <- gsub("g__", "", tax_df$Genus)
+tax_df$Species_clean <- gsub("s__", "", tax_df$Species)
+
+ntaxa(ps) #passt
+```
+
+# Setup
+
+```{r}
+family_colors <- c(
+  "Buprestidae"   = "#993C1D",  # Dunkles Terrakotta
+  "Cerambycidae"  = "#0F6E56",  # Dunkelgrün/Teal
+  "Tenebrionidae" = "#D4537E",  # Pink/Magenta
+  "Curculionidae" = "#3C3489",  # Dunkelviolett
+  "Carabidae"     = "#888780",  # Grau
+  "Silvanidae"    = "#B08968"   # Sandbraun -- neu, Uleiota planatus
+)
+
+species_order <- c(
+  "Anthaxia fulgurans", "Anthaxia quadripunctata",
+  "Chrysobothris affinis", "Buprestis haemorrhoidalis",
+  "Rhagium bifasciatum", "Rhagium inquisitor", "Rhagium mordax",
+  "Pachytodes cerambyciformis", "Rutpela maculata", "Stenurella melanura",
+  "Corymbia rubra",
+  "Bolitophagus reticulatus", "Ips typographus", "Pterostichus aethiops",
+  "Uleiota planatus"
+)
+```
+
+---
+
+## Read Tracking
+
+```{r}
+#| label: read-tracking
+
+runs <- c("EC24_245", "3XX", "Popa", "Buse", "EC25_600_a_01")
+
+track_all <- lapply(runs, function(run) {
+  df <- read.csv(file.path(base_path, "Data/Final/DADA2_Output_v3",
+                            run, "read_tracking.csv"))
+  df$run <- run
+  df
+}) %>% bind_rows()
+
+grammoptera_ids <- c("EC24_245_0016_FITS_B04_iA", "EC24_245_0017_FITS_B05_iA",
+                     "EC24_245_0018_FITS_B06_iA", "EC24_245_0019_FITS_B07_iA",
+                     "EC24_245_0020_FITS_B08_iA", "EC24_245_0021_FITS_B09_iA",
+                     "EC24_245_0022_FITS_B10_iA", "EC24_245_0023_FITS_B11_iA")
+
+track_summary <- track_all %>%
+  filter(!grepl("NC|negativ|332|333|334", X)) %>%
+  filter(!gsub("-", "_", gsub("ns2024-18-", "",
+               gsub("_S\\d+_L001$", "", X))) %in% grammoptera_ids) %>%
+  group_by(run) %>%
+  summarise(
+    n_samples      = n(),
+    reads_input    = sum(Input),
+    reads_filtered = sum(Gefiltert),
+    reads_merged   = sum(Merged),
+    reads_nochim   = sum(Ohne_Chimaeren),
+    pct_retained   = round(reads_nochim / reads_input * 100, 1)
+  )
+
+print(track_summary)
+
+sum(track_summary$reads_nochim)
+```
+
+# DISCUSSION: Prozentsatz Popa und EC24_245
+
+```{r}
+table(tax_table(ps)[, "Phylum"], useNA = "always")
+sort(sample_sums(ps))[1:15]
+
+# Welche Käferart und wie viele Reads pro Probe, aufsteigend
+data.frame(
+  sample = names(sample_sums(ps)),
+  reads  = sample_sums(ps)
+) %>%
+  left_join(meta_df %>% select(sample, beetle_species),
+            by = "sample") %>%
+  arrange(reads) %>%
+  print()
+
+# Proben pro Art, und wie viele über 5000 Reads
+data.frame(
+  sample = names(sample_sums(ps)),
+  reads  = sample_sums(ps)
+) %>%
+  left_join(meta_df %>% select(sample, beetle_species), by = "sample") %>%
+  group_by(beetle_species) %>%
+  summarise(
+    n_total      = n(),
+    n_above_5000 = sum(reads >= 5000),
+    min_reads    = min(reads),
+    median_reads = median(reads)
+  ) %>%
+  arrange(n_above_5000)%>%
+  print()
+```
+Beim Read-tracking auffällig: Der Sequenzierlauf 300X hat viele reads vorher gefiltert -> Es sind aber noch genügen übrig. In der Diskussion erwähnen
+
+# Unclassified fungi und Grammoptera filtern
+---
+```{r}
+# =============================================================================
+# Filter v3 — Incertae sedis / NA-Phylum entfernen + Grammoptera raus
+# ASV-Ebene (kein OTU-Mapping mehr, da auf ASVs gearbeitet wird)
+# =============================================================================
+
+cat("Start: ", ntaxa(ps), "ASVs,", nsamples(ps), "Proben\n\n")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unclassified prüfen (BLAST-Export der Top 50) — optional, wie in v2
+# Die meisten unklassifizierten "Pilze" sind Käfer- oder Pflanzen-DNA,
+# die in UNITE fälschlich als Kingdom = Fungi gelabelt wurden -> rausfiltern.
+# ─────────────────────────────────────────────────────────────────────────────
+tax_df <- as.data.frame(tax_table(ps)) %>%
+  rownames_to_column("sequence")
+
+# kurze ASV-IDs (für FASTA-Header)
+asv_map <- data.frame(
+  asv_id   = paste0("ASV", seq_len(ntaxa(ps))),
+  sequence = taxa_names(ps),
+  stringsAsFactors = FALSE
+)
+
+unclassified_seqs <- tax_df %>%
+  filter(Phylum == "p__Fungi_phy_Incertae_sedis" | is.na(Phylum)) %>%
+  pull(sequence)
+
+unclassified_reads <- taxa_sums(ps)[unclassified_seqs]
+top50_seqs_ids     <- names(sort(unclassified_reads, decreasing = TRUE))[1:50]
+
+top50_fasta <- asv_map %>% filter(sequence %in% top50_seqs_ids)
+fasta_lines <- paste0(">", top50_fasta$asv_id, "\n", top50_fasta$sequence)
+writeLines(fasta_lines,
+           file.path(base_path, "Data/Final/unclassified_top50_v3.fasta"))
+cat("FASTA exportiert:", nrow(top50_fasta), "Sequenzen\n\n")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Filter 1: Incertae sedis + NA-Phylum entfernen
+# ─────────────────────────────────────────────────────────────────────────────
+ps_filtered <- subset_taxa(
+  ps,
+  !is.na(Phylum) & Phylum != "p__Fungi_phy_Incertae_sedis"
+)
+cat("Nach Incertae-sedis/NA-Filter:", ntaxa(ps_filtered), "ASVs\n")
+cat("  entfernt:", ntaxa(ps) - ntaxa(ps_filtered), "ASVs\n\n")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Filter 2: Grammoptera ruficornis + Dungkäfer entfernen (nicht Teil der
+# Forschungsfrage: koprophag, nicht holz-/pilzassoziiert). Corymbia rubra
+# (Cerambycidae) und Uleiota planatus (Silvanidae, saproxylisch-fungivor,
+# potenziell mycangientragend) bleiben als neue Arten erhalten.
+# ─────────────────────────────────────────────────────────────────────────────
+species_to_exclude <- c(
+  "Grammoptera_ruficornis",
+  "Melinopterus_sphacelatus",  # Dungkäfer (Scarabaeidae/Aphodiinae), koprophag
+  "Nimbus_contaminatus",       # Dungkäfer (Scarabaeidae/Aphodiinae), koprophag
+  "Uleiota_planatus"          # Raubplattkäfer
+)
+
+ps_filtered <- subset_samples(ps_filtered,
+                              !(beetle_species %in% species_to_exclude))
+ps_filtered <- prune_taxa(taxa_sums(ps_filtered) > 0, ps_filtered)
+
+cat("Nach Grammoptera-/Dungkäfer-Entfernung:\n")
+cat("  ASVs final:  ", ntaxa(ps_filtered), "\n")
+cat("  Proben final:", nsamples(ps_filtered), "\n")
+cat("  Arten final: ", length(unique(sample_data(ps_filtered)$beetle_species)), "\n\n")
+
+cat("Finale Artenliste:\n")
+print(sort(unique(sample_data(ps_filtered)$beetle_species)))
+cat("\n")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Taxonomie-Tabelle für gefilterte ASVs (bereinigte Namen)
+# ─────────────────────────────────────────────────────────────────────────────
+tax_df_f <- as.data.frame(tax_table(ps_filtered))
+tax_df_f$ASV           <- rownames(tax_df_f)
+tax_df_f$Genus_clean   <- gsub("g__", "", tax_df_f$Genus)
+tax_df_f$Species_clean <- gsub("s__", "", tax_df_f$Species)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Speichern (v3-Pfade) -- Zwischenstand OHNE family, wird unten ergänzt
+# ─────────────────────────────────────────────────────────────────────────────
+saveRDS(ps_filtered,
+        file.path(base_path, "Data/Final/Taxonomy_v3/ps_filtered.rds"))
+
+saveRDS(tax_df_f,
+        file.path(base_path, "Data/Final/Taxonomy_v3/tax_df_f.rds"))
+
+cat("Gespeichert:\n")
+cat("  ps_filtered.rds (", ntaxa(ps_filtered), "ASVs,",
+    nsamples(ps_filtered), "Proben )\n")
+cat("  tax_df_f.rds\n")
+
+# ── Phylum-Verteilung final ──────────────────────────────────────────────────
+cat("\nPhylum-Verteilung (final):\n")
+print(sort(table(tax_table(ps_filtered)[, "Phylum"]), decreasing = TRUE))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# family aus beetle_traits ins phyloseq-Objekt eintragen
+#
+# WICHTIG (Fix): sample_data(ps_filtered) kann bereits eine "family"-Spalte
+# (oder, falls das Skript vorher schon mal fehlerhaft lief, sogar
+# "family.x"/"family.y") enthalten -- ohne das select(-matches(...)) unten
+# würde der folgende left_join() weitere Duplikate erzeugen (dplyr benennt
+# Namenskonflikte automatisch in .x/.y um, statt einen Fehler zu werfen).
+# Kombiniert mit dem Fix oben (ps wird aus phyloseq_all.rds statt aus der
+# eigenen Ausgabedatei geladen) ist dieser Join jetzt für jeden Durchlauf
+# sauber und wiederholbar (idempotent).
+# ─────────────────────────────────────────────────────────────────────────────
+beetle_traits <- read.csv(file.path(base_path, "Data/Metadata/beetle_traits.csv"))
+
+sample_df <- data.frame(sample_data(ps_filtered)) %>%
+  rownames_to_column("sample_rowname") %>%
+  select(-matches("^family(\\.[xy])?$")) %>%   # entfernt family, family.x, family.y falls vorhanden
+  left_join(beetle_traits %>% select(species, family) %>% distinct(),
+            by = c("beetle_species" = "species")) %>%
+  column_to_rownames("sample_rowname")
+
+cat("family-NAs nach Join:", sum(is.na(sample_df$family)), "\n")
+cat("Spalten in sample_df:", paste(colnames(sample_df), collapse = ", "), "\n")
+stopifnot(sum(grepl("^family\\.[xy]$", colnames(sample_df))) == 0)
+
+sample_data(ps_filtered) <- sample_data(sample_df)
+
+# Finaler Speicherstand, jetzt MIT sauberer family-Spalte (nur eine!)
+saveRDS(ps_filtered, file.path(base_path, "Data/Final/Taxonomy_v3/ps_filtered.rds"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# otu_ps und tax_df NEU aus ps_filtered bauen (nicht aus dem rohen ps von
+# ganz oben!). Sonst würden downstream-Chunks, die otu_ps mit meta_family/
+# tax_df_f joinen (beide auf ps_filtered-Basis), stille NA-Zeilen für
+# bereits gefilterte Proben (Grammoptera) und ASVs (Incertae sedis)
+# erzeugen -- gleiche Fehlerklasse wie der family.x/family.y-Bug oben.
+# ─────────────────────────────────────────────────────────────────────────────
+otu_ps <- as.data.frame(otu_table(ps_filtered))
+if (!taxa_are_rows(ps_filtered)) {
+  otu_ps <- as.data.frame(t(otu_ps))
+}
+
+cat("otu_ps final (aus ps_filtered):", nrow(otu_ps), "ASVs x", ncol(otu_ps), "Proben\n")
+```
+
+
+## Taxonomische Zusammensetzung
+
+```{r}
+#| label: taxonomy-rates
+
+# ── Klassifizierungsraten ─────────────────────────────────────────────────────
+cat("=== Klassifizierungsraten (n =", ntaxa(ps_filtered), "ASVs) ===\n")
+for (rank in c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")) {
+  n <- sum(!is.na(tax_df_f[[rank]]) & tax_df_f[[rank]] != "" &
+           !grepl("^[kpcofgs]__$", tax_df_f[[rank]]))
+  cat(sprintf("%-10s %5d  (%.1f%%)\n", rank, n, 100 * n / nrow(tax_df_f)))
+}
+
+# ── Phylum-Zusammensetzung ────────────────────────────────────────────────────
+cat("\n=== Phylum-Verteilung ===\n")
+phylum_df <- tax_df_f %>%
+  mutate(Phylum_clean = gsub("p__", "", Phylum)) %>%
+  count(Phylum_clean, sort = TRUE) %>%
+  mutate(pct = round(n / sum(n) * 100, 1),
+         Phylum_clean = fct_reorder(Phylum_clean, n))
+
+print(phylum_df)
+
+# ── Top 15 Genera ─────────────────────────────────────────────────────────────
+cat("\n=== Top 15 Genera ===\n")
+genus_df <- tax_df_f %>%
+  mutate(Genus_clean = gsub("g__", "", Genus)) %>%
+  filter(!is.na(Genus_clean) & Genus_clean != "" &
+         !grepl("Incertae_sedis", Genus_clean)) %>%
+  count(Genus_clean, sort = TRUE) %>%
+  slice_head(n = 15) %>%
+  mutate(Genus_clean = fct_reorder(Genus_clean, n))
+
+print(genus_df)
+```
+
+---
+
+## Plots: Taxonomie
+
+```{r}
+#| label: taxonomy-plots
+#| fig-width: 14
+#| fig-height: 6
+
+phylum_colors <- c(
+  "Ascomycota"          = "darkgoldenrod2",
+  "Basidiomycota"       = "chocolate3",
+  "Mortierellomycota"   = "#74C476",
+  "Mucoromycota"        = "#A1D99B",
+  "Chytridiomycota"     = "#FDD0A2",
+  "Rozellomycota"       = "#FDAE6B",
+  "Basidiobolomycota"   = "#C7E9C0",
+  "Olpidiomycota"       = "#BCBDDC",
+  "Sanchytriomycota"    = "#DADAEB",
+  "Entomophthoromycota" = "#F7FBFF"
+)
+
+plot_phylum <- ggplot(phylum_df,
+                      aes(x = n, y = Phylum_clean, fill = Phylum_clean)) +
+  geom_col() +
+  geom_text(aes(label = paste0(pct, "%")), hjust = -0.1, size = 5) +
+  scale_fill_manual(values = phylum_colors, na.value = "#969696") +
+  labs(x = "Number of ASVs", y = NULL) +
+  xlim(0, max(phylum_df$n) * 1.15) +
+  theme_minimal(base_size = 16) +
+  theme(
+    legend.position = "none",
+    axis.text.y     = element_text(face = "italic")
+  )
+
+plot_genus <- ggplot(genus_df, aes(x = n, y = Genus_clean)) +
+  geom_col(fill = "bisque3") +
+  geom_text(aes(label = n), hjust = -0.1, size = 5) +
+  labs(x = "Number of ASVs", y = NULL) +
+  xlim(0, max(genus_df$n) * 1.15) +
+  theme_minimal(base_size = 16) +
+  theme(axis.text.y = element_text(face = "italic"))
+
+combined_tax <- plot_phylum + plot_genus +
+  plot_layout(widths = c(1.4, 1)) +
+  plot_annotation(tag_levels = "A")
+
+combined_tax
+
+ggsave(file.path(base_path, "Results/Figures/taxonomy_combined_v3.pdf"),
+       plot = combined_tax, width = 14, height = 6, bg = "white")
+
+#Noch einfärben, welche Familie welchen Anteil hat?
+```
+# Plot normalized
+
+```{r}
+#| label: taxonomy-plots-normalized
+#| fig-width: 14
+#| fig-height: 6
+
+meta_family <- data.frame(sample_data(ps_filtered)) %>%
+  rownames_to_column("sample") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  select(sample, family)
+
+# ── Proben-Anzahl pro Familie (für die Normierung) ──────────────────────────
+family_sample_counts <- meta_family %>%
+  distinct(sample, family) %>%
+  count(family, name = "n_samples")
+
+cat("=== Proben pro Familie ===\n")
+print(family_sample_counts)
+
+# ── ASV-Level-Tabelle mit sequence + sample + family (Basis für beide Plots) ──
+asv_family_long <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(meta_family, by = "sample") %>%
+  left_join(tax_df_f %>% rownames_to_column("sequence"), by = "sequence")
+
+# ── Plot A: Phylum, nur >5% Anteil an allen ASVs, normiert auf Proben/Familie ──
+phylum_family_df <- asv_family_long %>%
+  mutate(Phylum = gsub("p__", "", Phylum)) %>%
+  distinct(sequence, Phylum, family) %>%
+  count(Phylum, family, name = "n_asv") %>%
+  left_join(family_sample_counts, by = "family") %>%
+  mutate(n_asv_per_sample = n_asv / n_samples)
+
+phylum_order <- phylum_family_df %>%
+  group_by(Phylum) %>%
+  summarise(total = sum(n_asv)) %>%
+  mutate(pct_total = total / sum(total) * 100) %>%
+  filter(pct_total > 1) %>%
+  arrange(total) %>%
+  pull(Phylum)
+
+phylum_family_df <- phylum_family_df %>%
+  filter(Phylum %in% phylum_order) %>%
+  mutate(Phylum = factor(Phylum, levels = phylum_order))
+
+plot_phylum <- ggplot(phylum_family_df, aes(x = n_asv_per_sample, y = Phylum, fill = family)) +
+  geom_col(position = "stack", color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = family_colors, name = "Family") +
+  labs(x = "Number of ASVs per sample", y = NULL) +
+  theme_minimal(base_size = 16) +
+  theme(
+    legend.position = "bottom",
+    axis.text.y     = element_text(face = "italic")
+  )
+
+# ── Plot B: Top-15-Genera, normiert auf Proben/Familie ──────────────────────
+genus_family_df <- asv_family_long %>%
+  mutate(Genus_clean = gsub("g__", "", Genus)) %>%
+  filter(!is.na(Genus_clean) & Genus_clean != "" &
+         !grepl("Incertae_sedis", Genus_clean)) %>%
+  filter(Genus_clean %in% levels(genus_df$Genus_clean)) %>%
+  distinct(sequence, Genus_clean, family) %>%
+  count(Genus_clean, family, name = "n_asv") %>%
+  left_join(family_sample_counts, by = "family") %>%
+  mutate(n_asv_per_sample = n_asv / n_samples)
+
+genus_order <- genus_family_df %>%
+  group_by(Genus_clean) %>%
+  summarise(total = sum(n_asv)) %>%
+  arrange(total) %>%
+  pull(Genus_clean)
+
+genus_family_df <- genus_family_df %>%
+  mutate(Genus_clean = factor(Genus_clean, levels = genus_order))
+
+plot_genus <- ggplot(genus_family_df, aes(x = n_asv_per_sample, y = Genus_clean, fill = family)) +
+  geom_col(position = "stack", color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = family_colors, name = "Family") +
+  labs(x = "Number of ASVs per sample", y = NULL) +
+  theme_minimal(base_size = 16) +
+  theme(
+    legend.position = "bottom",
+    axis.text.y     = element_text(face = "italic")
+  )
+
+# ── Kombinieren ────────────────────────────────────────────────────────────────
+combined_tax <- plot_phylum + plot_genus +
+  plot_layout(widths = c(1.4, 1), guides = "collect") +
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom")
+
+combined_tax
+
+ggsave(file.path(base_path, "Results/Figures/taxonomy_combined_v3.pdf"),
+       plot = combined_tax, width = 14, height = 6, bg = "white")
+```
+
+
+# RESULTS: Dominant Taxa
+
+```{r}
+#| label: dominant-taxa
+
+# ── meta_family um beetle_species erweitern ───────────────────────────────────
+meta_family <- data.frame(sample_data(ps_filtered)) %>%
+  rownames_to_column("sample") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  select(sample, family, beetle_species)
+
+# ── asv_family_long neu bauen (enthält jetzt auch beetle_species) ───────────
+asv_family_long <- otu_ps %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(meta_family, by = "sample") %>%
+  left_join(tax_df_f %>% rownames_to_column("sequence"), by = "sequence")
+
+# ── Plot A: Phylum, jetzt Threshold >1% statt >5% ────────────────────────────
+phylum_family_df <- asv_family_long %>%
+  mutate(Phylum = gsub("p__", "", Phylum)) %>%
+  distinct(sequence, Phylum, family) %>%
+  count(Phylum, family, name = "n_asv")
+
+phylum_order <- phylum_family_df %>%
+  group_by(Phylum) %>%
+  summarise(total = sum(n_asv)) %>%
+  mutate(pct_total = total / sum(total) * 100) %>%
+  filter(pct_total > 1) %>%
+  arrange(total) %>%
+  pull(Phylum)
+
+phylum_family_df <- phylum_family_df %>%
+  filter(Phylum %in% phylum_order) %>%
+  mutate(Phylum = factor(Phylum, levels = phylum_order))
+
+# ── Family-Anteile in Zahlen ───────────────────────────────────────────────
+phylum_family_summary <- phylum_family_df %>%
+  group_by(Phylum) %>%
+  mutate(pct_family = round(n_asv / sum(n_asv) * 100, 1)) %>%
+  arrange(Phylum, desc(pct_family)) %>%
+  ungroup()
+
+cat("=== Family-Anteile pro Phylum (>1% Gesamt-ASVs) ===\n")
+print(phylum_family_summary, n = Inf)
+
+# ── Genus-Level: Family-Anteile ───────────────────────────────────────────────
+genus_family_summary <- genus_family_df %>%
+  group_by(Genus_clean) %>%
+  mutate(pct_family = round(n_asv / sum(n_asv) * 100, 1)) %>%
+  arrange(Genus_clean, desc(pct_family)) %>%
+  ungroup()
+
+cat("\n=== Family-Anteile pro Top-15-Genus ===\n")
+print(genus_family_summary, n = Inf)
+
+# ── Welche Käferart(en) dominieren pro Genus ──────────────────────────────────
+species_per_genus <- asv_family_long %>%
+  mutate(Genus_clean = gsub("g__", "", Genus)) %>%
+  filter(Genus_clean %in% levels(genus_df$Genus_clean)) %>%
+  distinct(sequence, Genus_clean, beetle_species) %>%
+  count(Genus_clean, beetle_species, name = "n_asv") %>%
+  group_by(Genus_clean) %>%
+  mutate(pct_species = round(n_asv / sum(n_asv) * 100, 1)) %>%
+  arrange(Genus_clean, desc(pct_species)) %>%
+  ungroup()
+
+cat("\n=== Dominierende Käferarten pro Top-15-Genus ===\n")
+print(species_per_genus, n = Inf)
+
+# ── Wie viele ASVs pro Genus werden zwischen mehreren Arten derselben Familie geteilt? ──
+shared_within_family <- asv_family_long %>%
+  mutate(Genus_clean = gsub("g__", "", Genus)) %>%
+  filter(Genus_clean %in% levels(genus_df$Genus_clean)) %>%
+  distinct(sequence, Genus_clean, family, beetle_species) %>%
+  group_by(sequence, Genus_clean, family) %>%
+  summarise(n_species_sharing = n_distinct(beetle_species), .groups = "drop") %>%
+  filter(n_species_sharing > 1)
+
+cat("=== ASVs pro Genus/Family, die von >1 Art geteilt werden ===\n")
+shared_within_family %>%
+  count(Genus_clean, family, name = "n_shared_asvs") %>%
+  arrange(desc(n_shared_asvs)) %>%
+  print(n = Inf)
+
+shared_within_family_pct <- shared_within_family %>%
+  count(Genus_clean, family, name = "n_shared_asvs") %>%
+  left_join(
+    genus_family_df %>% select(Genus_clean, family, n_asv),
+    by = c("Genus_clean", "family")
+  ) %>%
+  mutate(pct_shared = round(n_shared_asvs / n_asv * 100, 1)) %>%
+  arrange(desc(pct_shared))
+
+print(shared_within_family_pct, n = Inf)
+```
+
+
+---
+
+## Species Accumulation Curves
+
+```{r}
+#| label: species-accumulation-calc
+
+# ── Proben-IDs mit Leerzeichen-Artnamen (passend zu species_order) ──────────
+meta_specaccum <- meta_family %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species))
+
+# ── otu_ps transponieren: Proben in die Zeilen, ASVs in die Spalten ─────────
+otu_ps_samples_rows <- as.data.frame(t(as.matrix(otu_ps)))
+rownames(otu_ps_samples_rows) <- gsub("^X", "", rownames(otu_ps_samples_rows))
+
+# ── Species Accumulation Curve pro Käferart ─────────────────────────────────
+specaccum_list <- lapply(unique(meta_specaccum$beetle_species), function(sp) {
+  samples_sp <- meta_specaccum$sample[meta_specaccum$beetle_species == sp]
+  mat_sp <- as.matrix(otu_ps_samples_rows)[rownames(otu_ps_samples_rows) %in% samples_sp, , drop = FALSE]
+
+  if (nrow(mat_sp) < 2) {
+    cat(sp, ": nur", nrow(mat_sp), "Probe(n), übersprungen\n")
+    return(NULL)
+  }
+
+  sa <- specaccum(mat_sp, method = "random", permutations = 100)
+
+  data.frame(
+    beetle_species = sp,
+    n_samples = sa$sites,
+    richness  = sa$richness,
+    sd        = sa$sd
+  )
+})
+
+specaccum_df <- bind_rows(specaccum_list) %>%
+  left_join(meta_specaccum %>% distinct(beetle_species, family), by = "beetle_species") %>%
+  mutate(beetle_species = factor(beetle_species, levels = species_order))
+
+cat("=== Species Accumulation: Arten mit ausreichend Proben (n>=2) ===\n")
+print(unique(specaccum_df$beetle_species))
+```
+
+
+```{r}
+#| label: species-accumulation-curves-single
+
+# ── Label-Position: letzter Punkt jeder Kurve ─────────────────────────────────
+label_df <- specaccum_df %>%
+  group_by(beetle_species) %>%
+  filter(n_samples == max(n_samples)) %>%
+  ungroup()
+
+p_specaccum_single <- ggplot(specaccum_df, aes(x = n_samples, y = richness,
+                                               color = family, group = beetle_species)) +
+  geom_line(linewidth = 0.9) +
+  geom_label_repel(data = label_df,
+                   aes(label = beetle_species),
+                   size = 4.5,
+                   fontface = "italic",
+                   show.legend = FALSE,
+                   max.overlaps = Inf,
+                   box.padding = 0.8,
+                   point.padding = 1.0,
+                   label.padding = grid::unit(0.25, "lines"),
+                   label.size = 0.2,
+                   force = 6,
+                   force_pull = 0.3,
+                   direction = "y",
+                   hjust = 0,
+                   seed = 42) +
+  scale_color_manual(values = family_colors) +
+  labs(x = "Number of samples", y = "Cumulative number of ASVs",
+       color = "Family") +
+  xlim(1, max(specaccum_df$n_samples) * 1.35) +
+  theme_minimal(base_size = 16) +
+  theme(legend.position = "bottom")
+
+p_specaccum_single
+
+ggsave(file.path(base_path, "Results/Figures/species_accumulation_curves_single.pdf"),
+       plot = p_specaccum_single, width = 11, height = 7, bg = "white")
+```
+
+::: callout-note
+`specaccum_df` muss vor diesem Chunk bereits existieren (Species
+Accumulation Curve-Berechnung, siehe separater Chunk mit `vegan::specaccum()`
+pro Käferart). Falls dieser Chunk eigenständig läuft, den
+Berechnungs-Code davor ergänzen.
+:::
+
+# METHODEN: BP
+
+```{r}
+#| label: asv-length-stats
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ASV-Längen und Overlap-Statistik für Methods
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 1. ASV-Längen aus dem gefilterten phyloseq-Objekt ─────────────────────────
+asv_seqs    <- taxa_names(ps_filtered)
+asv_lengths <- nchar(asv_seqs)
+
+cat("=== ASV-Längen (gefiltert, n =", length(asv_seqs), ") ===\n")
+print(summary(asv_lengths))
+cat("Median:", median(asv_lengths), "bp\n")
+cat("Range: ", min(asv_lengths), "-", max(asv_lengths), "bp\n\n")
+
+# Verteilung nach Längenklassen
+cat("Längenverteilung:\n")
+print(table(cut(asv_lengths,
+                breaks = c(0, 250, 300, 350, 400, 450, Inf),
+                labels = c("<250", "250-300", "300-350",
+                           "350-400", "400-450", ">450"))))
+```

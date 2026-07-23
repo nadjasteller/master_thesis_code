@@ -1,0 +1,291 @@
+---
+title: "OTU clustering VSearch"
+format: pdf
+editor: visual
+---
+
+## Pakete laden
+
+```{r}
+library(phyloseq)
+library(Biostrings)
+library(tidyverse)
+library(vegan)     # vegdist
+```
+
+## Daten laden
+
+```{r}
+#| label: load-data
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# Phyloseq-Objekt
+ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v2/phyloseq_all.rds"))
+
+beetle_traits <- read.csv("~/Master_EnvironmentalSciences/Master_Thesis/Data/Metadata/beetle_traits.csv")
+
+otu_mat_new <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_new.rds"))
+
+# ── Metadaten ─────────────────────────────────────────────────────────────────
+meta_df <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("sample") %>%
+  mutate(sample = gsub("^X", "", sample))
+
+asv_map <- data.frame(
+  asv_id   = paste0("ASV", seq_along(taxa_names(ps))),
+  sequence = taxa_names(ps)
+)
+
+# ── Taxonomie aus phyloseq extrahieren ────────────────────────────────────────
+tax_df <- as.data.frame(tax_table(ps))
+tax_df$ASV         <- rownames(tax_df)
+tax_df$Genus_clean   <- gsub("g__", "", tax_df$Genus)
+tax_df$Species_clean <- gsub("s__", "", tax_df$Species)
+```
+
+## Clustering sinnvoll?
+
+```{r}
+# ASVs pro Lauf (nur wo Reads > 0)
+for (run in c("EC24_245", "3XX", "Popa", "Buse")) {
+  ps_sub <- subset_samples(ps, sequencing_run == run)
+  ps_sub <- prune_taxa(taxa_sums(ps_sub) > 0, ps_sub)
+  cat(run, ":", ntaxa(ps_sub), "ASVs\n")
+}
+
+# Überlapp zwischen Läufen
+asvs_ec24 <- taxa_names(prune_taxa(taxa_sums(subset_samples(ps, sequencing_run == "EC24_245")) > 0, ps))
+asvs_3xx  <- taxa_names(prune_taxa(taxa_sums(subset_samples(ps, sequencing_run == "3XX")) > 0, ps))
+asvs_buse <- taxa_names(prune_taxa(taxa_sums(subset_samples(ps, sequencing_run == "Buse")) > 0, ps))
+asvs_popa <- taxa_names(prune_taxa(taxa_sums(subset_samples(ps, sequencing_run == "Popa")) > 0, ps))
+
+cat("\nÜberlapp EC24 & 3XX:", length(intersect(asvs_ec24, asvs_3xx)), "\n")
+cat("Überlapp EC24 & Buse:", length(intersect(asvs_ec24, asvs_buse)), "\n")
+cat("Überlapp 3XX & Buse:", length(intersect(asvs_3xx, asvs_buse)), "\n")
+cat("Überlapp alle 4:", length(Reduce(intersect, list(asvs_ec24, asvs_3xx, asvs_buse, asvs_popa))), "\n")
+```
+
+Ja, Clustering ist sinnvoll.
+
+## VSearch vorbereiten: ASV to OTU clustering for NMDS
+
+```{r}
+
+# Abundanz pro ASV berechnen
+asv_counts <- colSums(seqtab_all)  # Gesamtreads pro ASV
+
+# FASTA mit Abundanz als size= exportieren
+seqs <- taxa_names(ps)
+names(seqs) <- paste0("ASV", seq_along(seqs), ";size=", asv_counts[seqs])
+
+writeXStringSet(
+  DNAStringSet(seqs),
+  file.path(base_path, "Data/Final/DADA2_Output_v2/asvs_all_v2.fasta")
+)
+
+# Prüfen
+readLines(file.path(base_path, "Data/Final/DADA2_Output_v2/asvs_all_v2.fasta"), n = 10)
+
+summary(asv_counts)
+hist(log10(asv_counts + 1))
+```
+
+## Prüfen, ob Clustering erfolgreich war
+
+```{r}
+# ── Schritt 1: .uc Datei einlesen ─────────────────────────────────────────────
+uc <- read.table(file.path(base_path, "Data/Final/OTU_v2/otus.uc"),
+                 sep = "\t", header = FALSE, stringsAsFactors = FALSE)
+
+# Nur Hit-Zeilen (H) und Seed-Zeilen (S) behalten
+uc_hits <- uc[uc$V1 %in% c("H", "S"), c("V1", "V9", "V10")]
+colnames(uc_hits) <- c("type", "asv", "otu")
+
+# Size-Tag entfernen
+uc_hits$asv_clean <- gsub(";size=.*$", "", uc_hits$asv)
+uc_hits$otu_clean <- gsub(";size=.*$", "", uc_hits$otu)
+
+# Für S-Zeilen (Seeds) ist OTU = ASV
+uc_hits$otu_clean[uc_hits$type == "S"] <- uc_hits$asv_clean[uc_hits$type == "S"]
+
+cat("ASVs gemappt:", nrow(uc_hits), "\n")
+cat("OTUs gesamt:", length(unique(uc_hits$otu_clean)), "\n")
+
+# ── Schritt 2: OTU-Tabelle erstellen ──────────────────────────────────────────
+# ASV-Matrix aus phyloseq (Samples × ASVs)
+asv_mat <- as.matrix(t(otu_table(ps)))
+colnames(asv_mat) <- gsub("^X", "", colnames(asv_mat))
+
+# Mapping: Sequenz → OTU-Centroid
+asv_to_otu <- setNames(uc_hits$otu_clean, uc_hits$asv_clean)
+
+# ASV-Nummer → Sequenz Mapping
+asv_map <- data.frame(
+  asv_id = paste0("ASV", seq_along(taxa_names(ps))),
+  sequence = taxa_names(ps)
+)
+
+# asv_mat Spaltennamen von Sequenz auf ASV-ID umstellen
+colnames(asv_mat) <- asv_map$asv_id[match(colnames(asv_mat), asv_map$sequence)]
+
+# Nur gematchte ASVs
+shared <- intersect(colnames(asv_mat), names(asv_to_otu))
+cat("Matches:", length(shared), "\n") #10833
+
+# OTU-Tabelle durch Summierung
+otu_mat_new <- t(rowsum(t(asv_mat[, shared]),
+                         group = asv_to_otu[shared],
+                         na.rm = TRUE))
+
+cat("OTU-Tabelle:", nrow(otu_mat_new), "Samples ×", ncol(otu_mat_new), "OTUs\n")
+
+# ── OTU-Tabelle speichern ──────────────────────────────────────────
+saveRDS(otu_mat_new, file.path(base_path, "Data/Final/OTU_v2/otu_mat_new.rds"))
+write.csv(otu_mat_new, file.path(base_path, "Data/Final/OTU_v2/otu_mat_new.csv"))
+
+# Einlesen in zukünftigen Sessions:
+# otu_mat_new <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_new.rds"))
+
+
+# ── Schritt 3: Distanzmatrix prüfen ───────────────────────────────────────────
+dist_otu <- vegdist(otu_mat_new, method = "bray")
+summary(as.vector(dist_otu))
+
+# OTU-Overlap zwischen Läufen
+meta_df_clean <- data.frame(sample_data(ps)) %>% rownames_to_column("sample")
+
+for (run in c("EC24_245", "3XX", "Popa", "Buse")) {
+  samples <- meta_df_clean$sample[meta_df_clean$sequencing_run == run]
+  samples <- gsub("^X", "", samples)
+  otus <- colnames(otu_mat_new)[colSums(otu_mat_new[samples, ]) > 0]
+  cat(run, ":", length(otus), "OTUs\n")
+}
+
+# OTUs pro Lauf als Liste
+otus_per_run <- list()
+for (run in c("EC24_245", "3XX", "Popa", "Buse")) {
+  samples <- meta_df_clean$sample[meta_df_clean$sequencing_run == run]
+  samples <- gsub("^X", "", samples)
+  otus_per_run[[run]] <- colnames(otu_mat_new)[colSums(otu_mat_new[samples, ]) > 0]
+}
+
+# Paarweiser Overlap
+cat("Überlapp EC24 & 3XX:", length(intersect(otus_per_run$EC24_245, otus_per_run$`3XX`)), "\n")
+cat("Überlapp EC24 & Buse:", length(intersect(otus_per_run$EC24_245, otus_per_run$Buse)), "\n")
+cat("Überlapp 3XX & Buse:", length(intersect(otus_per_run$`3XX`, otus_per_run$Buse)), "\n")
+cat("Überlapp alle 4:", length(Reduce(intersect, otus_per_run)), "\n")
+
+cat("OTU-Tabelle:", nrow(otu_mat_new), "Samples ×", ncol(otu_mat_new), "OTUs\n")
+```
+
+Der geringe Overlap erklärt den Median von 0.98 -\> in Diskussion erwähnen!
+
+# Unclassified Fungi rausfiltern, ist zum Großteil Käfer- oder Pflanzen DNA
+
+```{r}
+#| echo: false
+#| label: Blastn_Genbank
+
+
+# Unclassified 50 mit den häufigsten reads prüfen
+# Reads pro unclassified ASV summieren
+unclassified_asvs <- tax_df %>%
+  filter(Phylum == "p__Fungi_phy_Incertae_sedis" | is.na(Phylum)) %>%
+  pull(ASV)
+
+unclassified_reads <- rowSums(otu_table(ps)[unclassified_asvs, ])
+
+# Top 50 nach Reads
+top50_unclassified <- sort(unclassified_reads, decreasing = TRUE)[1:50]
+top50_ids <- asv_map$asv_id[asv_map$sequence %in% names(top50_unclassified)]
+
+# Als FASTA exportieren
+top50_seqs <- asv_map %>%
+  filter(asv_id %in% top50_ids)
+
+fasta_lines <- paste0(">", top50_seqs$asv_id, "\n", top50_seqs$sequence)
+
+writeLines(
+  fasta_lines,
+  file.path(base_path, "Data/Final/unclassified_top50.fasta")
+)
+
+cat("FASTA exportiert:", nrow(top50_seqs), "Sequenzen\n")
+
+# Blast zeigt, die meisten unklassifizierten "Pilze" sind Käfer oder Pflanzen-DNA, die fälschlicherweise als Kingdom=Fungi klassifiziert wurden in Unite --> Rausfiltern!
+```
+
+```{r}
+# ── Chunk 1: Filter ───────────────────────────────────────────────────────────
+ps_filtered <- subset_taxa(ps,
+  Phylum != "p__Fungi_phy_Incertae_sedis" & !is.na(Phylum))
+cat("ASVs vorher:", ntaxa(ps), "\n")
+cat("ASVs nachher:", ntaxa(ps_filtered), "\n")
+cat("Entfernt:", ntaxa(ps) - ntaxa(ps_filtered), "\n")
+
+# ── UC-Datei einlesen ────────────────────────────────────────────────────────
+uc <- read.table(file.path(base_path, "Data/Final/OTU_v2/otus.uc"),
+                 sep = "\t", header = FALSE,
+                 col.names = c("type", "cluster", "size", "pct_id", "strand",
+                               "q_start", "t_start", "alignment",
+                               "query", "target"))
+
+# ── ASV → OTU Mapping ────────────────────────────────────────────────────────
+asv_to_otu <- uc %>%
+  filter(type %in% c("H", "S")) %>%
+  mutate(
+    asv_id = gsub(";size=.*", "", query),
+    otu_id = ifelse(type == "S",
+                    gsub(";size=.*", "", query),
+                    gsub(";size=.*", "", target))
+  ) %>%
+  select(asv_id, otu_id)
+
+# ── Gefilterte OTU-IDs über Taxonomie ────────────────────────────────────────
+good_otu_ids <- asv_to_otu %>%
+  left_join(asv_map, by = "asv_id") %>%
+  filter(sequence %in% taxa_names(ps_filtered)) %>%
+  pull(otu_id) %>%
+  unique()
+
+cat("Gefilterte OTU-IDs:", length(good_otu_ids), "\n")
+
+otu_mat_f   <- otu_mat_new[, colnames(otu_mat_new) %in% good_otu_ids]
+otu_mat_t_f <- t(otu_mat_f)
+cat("Gefilterte OTU-Tabelle:", nrow(otu_mat_f), "Samples ×",
+    ncol(otu_mat_f), "OTUs\n")
+
+# ── Taxonomie für gefilterte OTUs ────────────────────────────────────────────
+tax_df_f <- as.data.frame(tax_table(ps_filtered))
+tax_df_f$ASV           <- rownames(tax_df_f)
+tax_df_f$Genus_clean   <- gsub("g__", "", tax_df_f$Genus)
+tax_df_f$Species_clean <- gsub("s__", "", tax_df_f$Species)
+
+```
+
+# Output speichern
+
+```{r}
+# ── Output speichern ──────────────────────────────────────────────────────────
+saveRDS(ps_filtered,
+        file.path(base_path, "Data/Final/Taxonomy_v2/ps_filtered.rds"))
+saveRDS(otu_mat_f,
+        file.path(base_path, "Data/Final/OTU_v2/otu_mat_f.rds"))
+saveRDS(otu_mat_t_f,
+        file.path(base_path, "Data/Final/OTU_v2/otu_mat_t_f.rds"))
+
+saveRDS(asv_to_otu,
+        file.path(base_path, "Data/Final/OTU_v2/asv_to_otu.rds"))
+
+cat("Gespeichert:", nrow(otu_mat_f), "Samples ×", ncol(otu_mat_f), "OTUs\n")
+
+# Beim nächsten Skript einlesen:
+# ── Einlesen ──────────────────────────────────────────────────────────────────
+
+# ps_filtered <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v2/ps_filtered.rds"))
+# otu_mat_f   <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_f.rds"))
+# otu_mat_t_f <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_t_f.rds"))
+# tax_df_f    <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v2/tax_df_f.rds"))
+
+```

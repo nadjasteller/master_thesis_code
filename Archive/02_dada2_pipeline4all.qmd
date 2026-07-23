@@ -1,0 +1,323 @@
+---
+title: "DADA2 – ASV Pipeline (alle Läufe)"
+subtitle: "Pilzgemeinschaften auf Käfern | Masterarbeit"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+## Übersicht
+
+Diese Pipeline verarbeitet die getrimmten ITS-Amplikon-Daten aller vier
+Sequenzierläufe mit DADA2 und erstellt eine gemeinsame ASV-Tabelle.
+
+> **Primer:** ITS3_KYO2 / ITS4_KYO2
+
+---
+
+## 1) Pakete laden
+
+```{r}
+#| label: packages
+#| message: false
+#| warning: false
+
+library(dada2)
+library(tidyverse)
+library(ggplot2)
+library(ShortRead)
+library(knitr)
+
+```
+
+---
+
+## 2) Pfade & Parameter definieren
+
+```{r}
+#| label: setup
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# Bei ITS ist truncLen = c(0, 0) mit maxEE: Standard-Ansatz laut DADA2-ITS-Tutorial, weil die ITS-Region variabel lang ist
+
+runs <- list(
+  EC24_245 = list(
+    trimmed  = file.path(base_path, "Data/Processed/Trimmed/EC24_245"),
+    filtered = file.path(base_path, "Data/Processed/Filtered/EC24_245"),
+    output   = file.path(base_path, "Data/Final/DADA2_Output/EC24_245"),
+    truncLen = c(0, 0)   # kein Trimmen, nur maxEE
+  ),
+  `3XX` = list(
+    trimmed  = file.path(base_path, "Data/Processed/Trimmed/3XX"),
+    filtered = file.path(base_path, "Data/Processed/Filtered/3XX"),
+    output   = file.path(base_path, "Data/Final/DADA2_Output/3XX"),
+    truncLen = c(0, 0)
+  ),
+  Popa = list(
+    trimmed  = file.path(base_path, "Data/Processed/Trimmed/Popa"),
+    filtered = file.path(base_path, "Data/Processed/Filtered/Popa"),
+    output   = file.path(base_path, "Data/Final/DADA2_Output/Popa"),
+    truncLen = c(0, 0)
+  ),
+  Buse = list(
+    trimmed  = file.path(base_path, "Data/Processed/Trimmed/Buse"),
+    filtered = file.path(base_path, "Data/Processed/Filtered/Buse"),
+    output   = file.path(base_path, "Data/Final/DADA2_Output/Buse"),
+    truncLen = c(0, 0)
+  )
+)
+
+# Ausgabeordner erstellen
+for (run in runs) {
+  dir.create(run$filtered, showWarnings = FALSE, recursive = TRUE)
+  dir.create(run$output,   showWarnings = FALSE, recursive = TRUE)
+}
+```
+
+---
+
+## 3) DADA2-Funktion definieren
+
+```{r}
+#| label: dada2-function
+
+run_dada2 <- function(run_name, run_params) {
+  
+  cat("\n========================================\n")
+  cat("Verarbeite Lauf:", run_name, "\n")
+  cat("========================================\n")
+  
+  # ------------------------------------------------------------
+  # Dateien einlesen
+  # ------------------------------------------------------------
+  R1_trimmed <- sort(list.files(run_params$trimmed, 
+                                pattern = "_R1_trimmed.fastq", 
+                                full.names = TRUE))
+  R2_trimmed <- sort(list.files(run_params$trimmed, 
+                                pattern = "_R2_trimmed.fastq", 
+                                full.names = TRUE))
+  
+  sample_names <- sub("_R1_trimmed.fastq", "", basename(R1_trimmed))
+  cat("Proben gefunden:", length(sample_names), "\n")
+  
+  # ------------------------------------------------------------
+  # Filter & Trimmen
+  # ------------------------------------------------------------
+  R1_filtered <- file.path(run_params$filtered, 
+                           paste0(sample_names, "_R1_filtered.fastq.gz"))
+  R2_filtered <- file.path(run_params$filtered, 
+                           paste0(sample_names, "_R2_filtered.fastq.gz"))
+  names(R1_filtered) <- sample_names
+  names(R2_filtered) <- sample_names
+  
+  cat("Filtere und trimme...\n")
+  out <- filterAndTrim(
+    fwd      = R1_trimmed,
+    filt     = R1_filtered,
+    rev      = R2_trimmed,
+    filt.rev = R2_filtered,
+    truncLen    = run_params$truncLen,
+    maxEE       = c(2, 5),
+    truncQ      = 2,
+    rm.phix     = TRUE,
+    compress    = TRUE,
+    multithread = FALSE
+  )
+  
+  out_df <- as.data.frame(out)
+  out_df$sample       <- sample_names
+  out_df$percent_kept <- round(out_df$reads.out / out_df$reads.in * 100, 1)
+  print(out_df[, c("sample", "reads.in", "reads.out", "percent_kept")])
+  cat("Durchschnittlich behalten:", round(mean(out_df$percent_kept), 1), "%\n")
+  
+  # ------------------------------------------------------------
+  # Fehlermodell lernen
+  # ------------------------------------------------------------
+  # Nur Dateien die nach dem Filtern noch existieren
+  R1_filtered_exist <- R1_filtered[file.exists(R1_filtered)]
+  R2_filtered_exist <- R2_filtered[file.exists(R2_filtered)]
+  
+  set.seed(42)
+  cat("Lerne Fehlermodell R1...\n")
+  err_R1 <- learnErrors(R1_filtered_exist, multithread = FALSE)
+  cat("Lerne Fehlermodell R2...\n")
+  err_R2 <- learnErrors(R2_filtered_exist, multithread = FALSE)
+  
+  # ------------------------------------------------------------
+  # ASV-Inferenz
+  # ------------------------------------------------------------
+  cat("ASV-Inferenz...\n")
+  dada_R1 <- dada(R1_filtered_exist, err = err_R1, multithread = FALSE)
+  dada_R2 <- dada(R2_filtered_exist, err = err_R2, multithread = FALSE)
+  
+  # ------------------------------------------------------------
+  # Merge
+  # ------------------------------------------------------------
+  cat("Merge R1 + R2...\n")
+  mergers <- mergePairs(
+    dadaF           = dada_R2,
+    derepF          = R2_filtered_exist,
+    dadaR           = dada_R1,
+    derepR          = R1_filtered_exist,
+    minOverlap      = 12,
+    maxMismatch     = 1,
+    justConcatenate = TRUE,
+    verbose         = FALSE
+  )
+  
+  # ------------------------------------------------------------
+  # Sequenztabelle & Chimären
+  # ------------------------------------------------------------
+  seqtab        <- makeSequenceTable(mergers)
+  seqtab_nochim <- removeBimeraDenovo(seqtab, method = "consensus",
+                                      multithread = FALSE, verbose = FALSE)
+  
+  cat("ASVs vor Chimären-Entfernung: ", ncol(seqtab), "\n")
+  cat("ASVs nach Chimären-Entfernung:", ncol(seqtab_nochim), "\n")
+  
+  # ------------------------------------------------------------
+  # Read-Tracking
+  # ------------------------------------------------------------
+  getN  <- function(x) sum(getUniques(x))
+  track <- cbind(
+    out[file.exists(R1_filtered), ],
+    sapply(dada_R2, getN),
+    sapply(dada_R1, getN),
+    sapply(mergers, getN),
+    rowSums(seqtab_nochim)
+  )
+  colnames(track) <- c("Input", "Gefiltert", "dada_R2", "dada_R1", 
+                        "Merged", "Ohne_Chimaeren")
+  rownames(track) <- names(R1_filtered_exist)
+  cat("\nRead-Tracking:\n")
+  print(track)
+  
+  # ------------------------------------------------------------
+  # Speichern
+  # ------------------------------------------------------------
+  saveRDS(seqtab_nochim, file.path(run_params$output, "seqtab_nochim.rds"))
+  write.csv(t(seqtab_nochim), file.path(run_params$output, "ASV_table.csv"))
+  write.csv(track, file.path(run_params$output, "read_tracking.csv"))
+  cat("Gespeichert in:", run_params$output, "\n")
+  
+  return(seqtab_nochim)
+}
+```
+
+---
+
+## 4) Alle Läufe verarbeiten
+
+```{r}
+#| label: run-all
+
+seqtabs <- list()
+
+for (run_name in names(runs)) {
+  seqtabs[[run_name]] <- run_dada2(run_name, runs[[run_name]])
+}
+```
+
+---
+
+## 5) Sequenztabellen zusammenführen
+
+```{r}
+#| label: merge-tables
+
+seqtab_all <- mergeSequenceTables(
+  seqtabs$EC24_245,
+  seqtabs$`3XX`,
+  seqtabs$Popa,
+  seqtabs$Buse
+)
+
+cat("Zusammengeführte Tabelle:\n")
+cat("  Proben:", nrow(seqtab_all), "\n")
+cat("  ASVs:  ", ncol(seqtab_all), "\n")
+
+# Speichern
+output_final <- file.path(base_path, "Data/Final/DADA2_Output")
+dir.create(output_final, showWarnings = FALSE, recursive = TRUE)
+
+saveRDS(seqtab_all, file.path(output_final, "seqtab_all.rds"))
+write.csv(t(seqtab_all), file.path(output_final, "ASV_table_all.csv"))
+cat("Gespeichert:", file.path(output_final, "seqtab_all.rds"), "\n")
+```
+## 7) Figures Results
+
+```{r}
+# Read-Tracking pro Lauf
+EC_245.readtracking <- read.csv(file.path(base_path, "Data/Final/DADA2_Output/EC24_245/read_tracking.csv")) %>% 
+  summarise(across(where(is.numeric), sum))%>%
+  mutate(sequencing_run = "EC_245") %>%
+  print()
+
+XX.readtracking <- read.csv(file.path(base_path, "Data/Final/DADA2_Output/3XX/read_tracking.csv")) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  mutate(sequencing_run = "XX") %>%
+  print()
+
+Popa.readtracking <- read.csv(file.path(base_path, "Data/Final/DADA2_Output/Popa/read_tracking.csv")) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  mutate(sequencing_run = "Popa") %>%
+  print()
+
+Buse.readtracking <- read.csv(file.path(base_path, "Data/Final/DADA2_Output/Buse/read_tracking.csv")) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  mutate(sequencing_run = "EC25_600") %>%
+  print()
+
+all.readtracking <- bind_rows(
+  EC_245.readtracking,
+  XX.readtracking,
+  Popa.readtracking,
+  Buse.readtracking
+)
+
+print(all.readtracking)
+
+results_table <- all.readtracking %>%
+  mutate(
+    Filtered_pct      = round(Gefiltert / Input * 100, 1),
+    dada_R2_pct       = round(dada_R2 / Input * 100, 1),
+    dada_R1_pct       = round(dada_R1 / Input * 100, 1),
+    Merged_pct        = round(Merged / Input * 100, 1),
+    Nonchimera_pct    = round(Ohne_Chimaeren / Input * 100, 1)
+  ) %>%
+  select(
+    sequencing_run,
+    Input,
+    Gefiltert, Filtered_pct,
+    dada_R1, dada_R1_pct,
+    dada_R2, dada_R2_pct,
+    Merged, Merged_pct,
+    Ohne_Chimaeren, Nonchimera_pct
+  )
+
+# noch für Overleaf Results section speichern
+```
+
+---
+
+## 6) Sessioninfo
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+R.version.string
+packageVersion("dada2")
+```

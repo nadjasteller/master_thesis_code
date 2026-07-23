@@ -1,0 +1,177 @@
+---
+title: "DADA2 – Qualitätskontrolle - Nachzuegler Corymbia rubra und Dungkaefer"
+subtitle: "Pilzgemeinschaften auf Käfern | Masterarbeit"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+# Packages
+
+```{r}
+library(dada2)
+library(tidyverse)
+
+```
+
+# QC
+
+```{r}
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+trimmed_path <- file.path(base_path, "Data/Processed/Trimmed_nextseq/EC25_600_a_01")
+
+R1_files <- sort(list.files(trimmed_path, pattern = "_R1_trimmed.fastq", full.names = TRUE))
+R2_files <- sort(list.files(trimmed_path, pattern = "_R2_trimmed.fastq", full.names = TRUE))
+
+cat("EC25_600_a_01 → R1:", length(R1_files), "| R2:", length(R2_files), "\n")
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_EC25_600_a_01_R1.pdf"), width = 12, height = 6)
+plotQualityProfile(R1_files[1:3])
+dev.off()
+
+pdf(file.path(base_path, "Results/Quality control/quality_profile_EC25_600_a_01_R2.pdf"), width = 12, height = 6)
+plotQualityProfile(R2_files[1:3])
+dev.off()
+
+plotQualityProfile(R1_files[1:3])
+plotQualityProfile(R2_files[1:3])
+```
+
+# DADA 2
+
+```{r}
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+run_params <- list(
+  trimmed  = file.path(base_path, "Data/Processed/Trimmed_nextseq/EC25_600_a_01"),
+  filtered = file.path(base_path, "Data/Processed/Filtered_v3/EC25_600_a_01"),
+  output   = file.path(base_path, "Data/Final/DADA2_Output_v3/EC25_600_a_01"),
+  truncLen = c(0, 0),   # 
+  loess    = TRUE       # NextSeq 2000 → loessErrfun
+)
+
+dir.create(run_params$filtered, showWarnings = FALSE, recursive = TRUE)
+dir.create(run_params$output,   showWarnings = FALSE, recursive = TRUE)
+
+# ── run_dada2_v3()-Funktion aus Skript 02, unverändert ─────────────────────
+run_dada2_v3 <- function(run_name, run_params) {
+
+  cat("\n========================================\n")
+  cat("Verarbeite Lauf:", run_name, "\n")
+  cat("loessErrfun:", run_params$loess, "\n")
+  cat("maxEE: c(5, 2) | truncQ: 3 | MERGING (justConcatenate = FALSE)\n")
+  cat("========================================\n")
+
+  R1_trimmed <- sort(list.files(run_params$trimmed, pattern = "_R1_trimmed.fastq", full.names = TRUE))
+  R2_trimmed <- sort(list.files(run_params$trimmed, pattern = "_R2_trimmed.fastq", full.names = TRUE))
+
+  sample_names <- sub("_R1_trimmed.fastq", "", basename(R1_trimmed))
+  cat("Proben gefunden:", length(sample_names), "\n")
+
+  R1_filtered <- file.path(run_params$filtered, paste0(sample_names, "_R1_filtered.fastq.gz"))
+  R2_filtered <- file.path(run_params$filtered, paste0(sample_names, "_R2_filtered.fastq.gz"))
+  names(R1_filtered) <- sample_names
+  names(R2_filtered) <- sample_names
+
+  cat("Filtere und trimme...\n")
+  out <- filterAndTrim(
+    fwd = R1_trimmed, filt = R1_filtered,
+    rev = R2_trimmed, filt.rev = R2_filtered,
+    truncLen = run_params$truncLen,
+    maxN = 0, maxEE = c(5, 2), truncQ = 3,
+    rm.phix = TRUE, compress = TRUE, multithread = FALSE
+  )
+
+  out_df <- as.data.frame(out)
+  out_df$sample <- sample_names
+  out_df$percent_kept <- round(out_df$reads.out / out_df$reads.in * 100, 1)
+  print(out_df[, c("sample", "reads.in", "reads.out", "percent_kept")])
+  cat("Durchschnittlich behalten:", round(mean(out_df$percent_kept), 1), "%\n")
+
+  R1_filtered_exist <- R1_filtered[file.exists(R1_filtered)]
+  R2_filtered_exist <- R2_filtered[file.exists(R2_filtered)]
+
+  set.seed(42)
+
+  if (run_params$loess) {
+    cat("Lerne Fehlermodell R1 (loessErrfun)...\n")
+    err_R1 <- learnErrors(R1_filtered_exist, errorEstimationFunction = loessErrfun, multithread = FALSE)
+    cat("Lerne Fehlermodell R2 (loessErrfun)...\n")
+    err_R2 <- learnErrors(R2_filtered_exist, errorEstimationFunction = loessErrfun, multithread = FALSE)
+  } else {
+    err_R1 <- learnErrors(R1_filtered_exist, multithread = FALSE)
+    err_R2 <- learnErrors(R2_filtered_exist, multithread = FALSE)
+  }
+
+  pdf(file.path(run_params$output, paste0("error_model_", run_name, "_R1.pdf")))
+  print(plotErrors(err_R1, nominalQ = TRUE))
+  dev.off()
+  pdf(file.path(run_params$output, paste0("error_model_", run_name, "_R2.pdf")))
+  print(plotErrors(err_R2, nominalQ = TRUE))
+  dev.off()
+
+  cat("ASV-Inferenz...\n")
+  dada_R1 <- dada(R1_filtered_exist, err = err_R1, multithread = FALSE)
+  dada_R2 <- dada(R2_filtered_exist, err = err_R2, multithread = FALSE)
+
+  cat("Merge R1 + R2 (justConcatenate = FALSE)...\n")
+  mergers <- mergePairs(
+    dadaF = dada_R2, derepF = R2_filtered_exist,
+    dadaR = dada_R1, derepR = R1_filtered_exist,
+    minOverlap = 12, maxMismatch = 2,
+    justConcatenate = FALSE, verbose = TRUE
+  )
+
+  merge_rate <- sapply(seq_along(mergers), function(i) {
+    m <- mergers[[i]]
+    di <- sum(getUniques(dada_R2[[i]]))
+    if (di > 0) round(sum(m$abundance) / di * 100, 1) else NA
+  })
+  cat("Merging-Rate pro Probe:\n")
+  print(setNames(merge_rate, names(mergers)))
+
+  seqtab <- makeSequenceTable(mergers)
+  seqtab_nochim <- removeBimeraDenovo(seqtab, method = "consensus", multithread = FALSE, verbose = FALSE)
+
+  cat("ASVs vor Chimären-Entfernung: ", ncol(seqtab), "\n")
+  cat("ASVs nach Chimären-Entfernung:", ncol(seqtab_nochim), "\n")
+
+  seq_lengths <- nchar(getSequences(seqtab_nochim))
+  cat("ASV-Längen nach Merging (sollte ~300-400 bp sein):\n")
+  print(summary(seq_lengths))
+
+  getN <- function(x) sum(getUniques(x))
+  track <- cbind(
+    out[file.exists(R1_filtered), ],
+    sapply(dada_R2, getN), sapply(dada_R1, getN),
+    sapply(mergers, getN), rowSums(seqtab_nochim)
+  )
+  colnames(track) <- c("Input", "Gefiltert", "dada_R2", "dada_R1", "Merged", "Ohne_Chimaeren")
+  rownames(track) <- names(R1_filtered_exist)
+  cat("\nRead-Tracking:\n")
+  print(track)
+
+  saveRDS(seqtab_nochim, file.path(run_params$output, "seqtab_nochim.rds"))
+  write.csv(t(seqtab_nochim), file.path(run_params$output, "ASV_table.csv"))
+  write.csv(track, file.path(run_params$output, "read_tracking.csv"))
+  cat("Gespeichert in:", run_params$output, "\n")
+
+  return(seqtab_nochim)
+}
+
+seqtab_EC25_600_a_01 <- run_dada2_v3("EC25_600_a_01", run_params)
+```
+

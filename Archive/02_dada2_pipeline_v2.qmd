@@ -1,0 +1,339 @@
+---
+title: "DADA2 – ASV Pipeline v2 (alle Läufe, angepasste Parameter)"
+subtitle: "Pilzgemeinschaften auf Käfern | Masterarbeit"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+## Übersicht
+
+Pipeline v2 – alle vier Läufe neu prozessiert mit angepassten Parametern:
+
+- **maxEE = c(2, 5)** – R2 (Forward) streng, R1 (Reverse) toleranter
+- **truncQ = 3** für alle Läufe
+- **loessErrfun** für NextSeq-Läufe (EC24_245, EC25_600)
+- **Standard-Fehlerfunktion** für MiSeq-Läufe (3XX, Popa)
+- NextSeq-Läufe nutzen `Trimmed_nextseq/` (mit --nextseq-trim=20)
+- MiSeq-Läufe nutzen `Trimmed/` (original)
+
+> **Primer:** ITS3_KYO2 / ITS4_KYO2
+
+---
+
+## 1) Pakete laden
+
+```{r}
+#| label: packages
+#| message: false
+#| warning: false
+
+library(dada2)
+library(tidyverse)
+library(ggplot2)
+library(ShortRead)
+library(knitr)
+```
+
+---
+
+## 2) Pfade & Parameter definieren
+
+```{r}
+#| label: setup
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# Neue Output-Ordner (v2) damit alte Ergebnisse erhalten bleiben
+runs <- list(
+  EC24_245 = list(
+    trimmed    = file.path(base_path, "Data/Processed/Trimmed_nextseq/EC24_245"),
+    filtered   = file.path(base_path, "Data/Processed/Filtered_v2/EC24_245"),
+    output     = file.path(base_path, "Data/Final/DADA2_Output_v2/EC24_245"),
+    truncLen   = c(0, 0),
+    loess      = TRUE   # NextSeq → loessErrfun
+  ),
+  `3XX` = list(
+    trimmed    = file.path(base_path, "Data/Processed/Trimmed/3XX"),
+    filtered   = file.path(base_path, "Data/Processed/Filtered_v2/3XX"),
+    output     = file.path(base_path, "Data/Final/DADA2_Output_v2/3XX"),
+    truncLen   = c(0, 0),
+    loess      = FALSE  # MiSeq → Standard
+  ),
+  Popa = list(
+    trimmed    = file.path(base_path, "Data/Processed/Trimmed/Popa"),
+    filtered   = file.path(base_path, "Data/Processed/Filtered_v2/Popa"),
+    output     = file.path(base_path, "Data/Final/DADA2_Output_v2/Popa"),
+    truncLen   = c(0, 0),
+    loess      = FALSE  # MiSeq → Standard
+  ),
+  Buse = list(
+    trimmed    = file.path(base_path, "Data/Processed/Trimmed_nextseq/Buse"),
+    filtered   = file.path(base_path, "Data/Processed/Filtered_v2/Buse"),
+    output     = file.path(base_path, "Data/Final/DADA2_Output_v2/Buse"),
+    truncLen   = c(0, 0),
+    loess      = TRUE   # NextSeq → loessErrfun
+  )
+)
+
+# Ausgabeordner erstellen
+for (run in runs) {
+  dir.create(run$filtered, showWarnings = FALSE, recursive = TRUE)
+  dir.create(run$output,   showWarnings = FALSE, recursive = TRUE)
+}
+
+cat("Ordner erstellt!\n")
+```
+
+---
+
+## 3) DADA2-Funktion
+
+```{r}
+#| label: dada2-function
+
+run_dada2_v2 <- function(run_name, run_params) {
+
+  cat("\n========================================\n")
+  cat("Verarbeite Lauf:", run_name, "\n")
+  cat("loessErrfun:", run_params$loess, "\n")
+  cat("maxEE: c(2, 5) | truncQ: 3\n")
+  cat("========================================\n")
+
+  # ------------------------------------------------------------
+  # Dateien einlesen
+  # ------------------------------------------------------------
+  R1_trimmed <- sort(list.files(run_params$trimmed,
+                                pattern = "_R1_trimmed.fastq",
+                                full.names = TRUE))
+  R2_trimmed <- sort(list.files(run_params$trimmed,
+                                pattern = "_R2_trimmed.fastq",
+                                full.names = TRUE))
+
+  sample_names <- sub("_R1_trimmed.fastq", "", basename(R1_trimmed))
+  cat("Proben gefunden:", length(sample_names), "\n")
+
+  # ------------------------------------------------------------
+  # Filter & Trimmen
+  # ------------------------------------------------------------
+  R1_filtered <- file.path(run_params$filtered,
+                           paste0(sample_names, "_R1_filtered.fastq.gz"))
+  R2_filtered <- file.path(run_params$filtered,
+                           paste0(sample_names, "_R2_filtered.fastq.gz"))
+  names(R1_filtered) <- sample_names
+  names(R2_filtered) <- sample_names
+
+  cat("Filtere und trimme...\n")
+  out <- filterAndTrim(
+    fwd         = R1_trimmed,   # R1 = Reverse reads
+    filt        = R1_filtered,
+    rev         = R2_trimmed,   # R2 = Forward reads
+    filt.rev    = R2_filtered,
+    truncLen    = run_params$truncLen,
+    maxN        = 0,
+    maxEE       = c(5, 2),      # R1 (Reverse) toleranter, R2 (Forward) strenger
+    truncQ      = 3,
+    rm.phix     = TRUE,
+    compress    = TRUE,
+    multithread = FALSE
+  )
+
+  out_df <- as.data.frame(out)
+  out_df$sample       <- sample_names
+  out_df$percent_kept <- round(out_df$reads.out / out_df$reads.in * 100, 1)
+  print(out_df[, c("sample", "reads.in", "reads.out", "percent_kept")])
+  cat("Durchschnittlich behalten:", round(mean(out_df$percent_kept), 1), "%\n")
+
+  # ------------------------------------------------------------
+  # Fehlermodell lernen
+  # ------------------------------------------------------------
+  R1_filtered_exist <- R1_filtered[file.exists(R1_filtered)]
+  R2_filtered_exist <- R2_filtered[file.exists(R2_filtered)]
+
+  set.seed(42)
+
+  if (run_params$loess) {
+    # NextSeq: loessErrfun für quality-binned Daten
+    cat("Lerne Fehlermodell R1 (loessErrfun)...\n")
+    err_R1 <- learnErrors(R1_filtered_exist,
+                          errorEstimationFunction = loessErrfun,
+                          multithread = FALSE)
+    cat("Lerne Fehlermodell R2 (loessErrfun)...\n")
+    err_R2 <- learnErrors(R2_filtered_exist,
+                          errorEstimationFunction = loessErrfun,
+                          multithread = FALSE)
+  } else {
+    # MiSeq: Standard-Fehlerfunktion
+    cat("Lerne Fehlermodell R1 (Standard)...\n")
+    err_R1 <- learnErrors(R1_filtered_exist, multithread = FALSE)
+    cat("Lerne Fehlermodell R2 (Standard)...\n")
+    err_R2 <- learnErrors(R2_filtered_exist, multithread = FALSE)
+  }
+
+  # Fehlermodell speichern
+  pdf(file.path(run_params$output,
+                paste0("error_model_", run_name, "_R1.pdf")))
+  print(plotErrors(err_R1, nominalQ = TRUE))
+  dev.off()
+  pdf(file.path(run_params$output,
+                paste0("error_model_", run_name, "_R2.pdf")))
+  print(plotErrors(err_R2, nominalQ = TRUE))
+  dev.off()
+  cat("Fehlermodell-Plots gespeichert!\n")
+
+  # ------------------------------------------------------------
+  # ASV-Inferenz
+  # ------------------------------------------------------------
+  cat("ASV-Inferenz...\n")
+  dada_R1 <- dada(R1_filtered_exist, err = err_R1, multithread = FALSE)
+  dada_R2 <- dada(R2_filtered_exist, err = err_R2, multithread = FALSE)
+
+  # ------------------------------------------------------------
+  # Merge
+  # ------------------------------------------------------------
+  cat("Merge R1 + R2...\n")
+  mergers <- mergePairs(
+    dadaF           = dada_R2,
+    derepF          = R2_filtered_exist,
+    dadaR           = dada_R1,
+    derepR          = R1_filtered_exist,
+    minOverlap      = 12,
+    maxMismatch     = 1,
+    justConcatenate = TRUE,
+    verbose         = FALSE
+  )
+
+  # ------------------------------------------------------------
+  # Sequenztabelle & Chimären
+  # ------------------------------------------------------------
+  seqtab        <- makeSequenceTable(mergers)
+  seqtab_nochim <- removeBimeraDenovo(seqtab, method = "consensus",
+                                      multithread = FALSE, verbose = FALSE)
+
+  cat("ASVs vor Chimären-Entfernung: ", ncol(seqtab), "\n")
+  cat("ASVs nach Chimären-Entfernung:", ncol(seqtab_nochim), "\n")
+
+  # ------------------------------------------------------------
+  # Read-Tracking
+  # ------------------------------------------------------------
+  getN  <- function(x) sum(getUniques(x))
+  track <- cbind(
+    out[file.exists(R1_filtered), ],
+    sapply(dada_R2, getN),
+    sapply(dada_R1, getN),
+    sapply(mergers, getN),
+    rowSums(seqtab_nochim)
+  )
+  colnames(track) <- c("Input", "Gefiltert", "dada_R2", "dada_R1",
+                        "Merged", "Ohne_Chimaeren")
+  rownames(track) <- names(R1_filtered_exist)
+  cat("\nRead-Tracking:\n")
+  print(track)
+
+  # ------------------------------------------------------------
+  # Speichern
+  # ------------------------------------------------------------
+  saveRDS(seqtab_nochim, file.path(run_params$output, "seqtab_nochim.rds"))
+  write.csv(t(seqtab_nochim), file.path(run_params$output, "ASV_table.csv"))
+  write.csv(track, file.path(run_params$output, "read_tracking.csv"))
+  cat("Gespeichert in:", run_params$output, "\n")
+
+  return(seqtab_nochim)
+}
+```
+
+---
+```{r}
+# Alter EC24_245 filterAndTrim Output
+old_track <- read.csv(file.path(base_path, 
+                                "Data/Final/DADA2_Output/EC24_245/read_tracking.csv"))
+old_track$percent_kept <- round(old_track$Gefiltert / old_track$Input * 100, 1)
+print(old_track[, c("X", "percent_kept")])
+
+#Für den Vergleich, wie viel Prozent behalten wird bei Filter & Trim
+```
+
+## 4) Alle Läufe verarbeiten
+
+```{r}
+#| label: run-all
+
+seqtabs <- list()
+
+for (run_name in names(runs)) {
+  seqtabs[[run_name]] <- run_dada2_v2(run_name, runs[[run_name]])
+}
+```
+
+---
+
+## 5) Sequenztabellen zusammenführen
+
+```{r}
+#| label: merge-tables
+
+seqtab_all <- mergeSequenceTables(
+  seqtabs$EC24_245,
+  seqtabs$`3XX`,
+  seqtabs$Popa,
+  seqtabs$Buse
+)
+
+cat("Zusammengeführte Tabelle:\n")
+cat("  Proben:", nrow(seqtab_all), "\n")
+cat("  ASVs:  ", ncol(seqtab_all), "\n")
+
+# Speichern
+output_final <- file.path(base_path, "Data/Final/DADA2_Output_v2")
+saveRDS(seqtab_all, file.path(output_final, "seqtab_all.rds"))
+write.csv(t(seqtab_all), file.path(output_final, "ASV_table_all.csv"))
+cat("Gespeichert:", file.path(output_final, "seqtab_all.rds"), "\n")
+
+seqtab_all_v2 <- readRDS(file.path(base_path, 
+                                    "Data/Final/DADA2_Output_v2/seqtab_all.rds"))
+cat("Proben:", nrow(seqtab_all_v2), "\n")
+cat("ASVs:  ", ncol(seqtab_all_v2), "\n")
+```
+
+---
+
+## 6) Read-Tracking alle Läufe
+
+```{r}
+#| label: read-tracking
+
+runs_label <- c("EC24_245", "3XX", "Popa", "Buse")
+runs_name  <- c("EC24_245", "3XX", "Popa", "EC25_600")
+
+all.readtracking <- lapply(seq_along(runs_label), function(i) {
+  read.csv(file.path(base_path, "Data/Final/DADA2_Output_v2",
+                     runs_label[i], "read_tracking.csv")) %>%
+    summarise(across(where(is.numeric), sum)) %>%
+    mutate(sequencing_run = runs_name[i])
+}) %>% bind_rows()
+
+print(all.readtracking)
+```
+
+---
+
+## 7) Session Info
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+R.version.string
+packageVersion("dada2")
+```

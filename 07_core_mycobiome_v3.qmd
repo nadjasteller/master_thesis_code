@@ -1,0 +1,442 @@
+---
+title: "07_core_mycobiome_v3"
+subtitle: "Core Mycobiome, Jaccard-Familienvergleich, Abgleich mit Popa et al. (2026)"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+## Übersicht
+
+Core-Mycobiome-Berechnung auf ASV-Ebene (Prävalenz ≥ 70% pro
+Käferart, nach Shade2012). Anschließend: Test, ob Core-Ähnlichkeit
+innerhalb von Käferfamilien höher ist als zwischen Familien
+(Jaccard-Index, Wilcoxon-Test), und Abgleich der *Ips typographus*-
+Taxa mit der Core/Potential-Core-Mycobiome-Liste aus Popa et al.
+(2026).
+
+Baut auf `05_diversity_community_v3.qmd` auf (benötigt `asv_mat`,
+`meta_df`, `ps`).
+
+---
+
+## 1) Pakete laden
+
+```{r}
+#| label: packages
+#| message: false
+#| warning: false
+
+library(phyloseq)
+library(vegan)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(ggsci)
+library(pheatmap)
+
+library(ggplot2)
+library(forcats)
+library(scales)
+library(patchwork)
+
+```
+
+---
+
+## 2) Daten laden
+
+```{r}
+#| label: load-data
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v3/ps_filtered.rds"))
+
+asv_mat <- as(otu_table(ps), "matrix")
+if (taxa_are_rows(ps)) asv_mat <- t(asv_mat)
+rownames(asv_mat) <- gsub("^X", "", rownames(asv_mat))
+
+meta_df <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("sample") %>%
+  mutate(sample = gsub("^X", "", sample))
+
+tax_asv <- as.data.frame(tax_table(ps)) %>%
+  rownames_to_column("sequence") %>%
+  mutate(
+    asv_id        = paste0("ASV", seq_len(ntaxa(ps))),
+    Genus_clean   = gsub("g__", "", Genus),
+    Species_clean = gsub("s__", "", Species)
+  )
+
+species_order <- c(
+  "Anthaxia fulgurans", "Anthaxia quadripunctata",
+  "Chrysobothris affinis", "Buprestis haemorrhoidalis",
+  "Rhagium bifasciatum", "Rhagium inquisitor", "Rhagium mordax",
+  "Pachytodes cerambyciformis", "Rutpela maculata", "Stenurella melanura",
+  "Bolitophagus reticulatus", "Ips typographus", "Pterostichus aethiops"
+)
+```
+
+---
+
+## 3) Core Mycobiome berechnen
+
+```{r}
+#| label: core-mycobiome
+
+core_per_species <- lapply(species_order, function(sp) {
+  sp_underscore <- gsub(" ", "_", sp)
+  samples_sp <- meta_df$sample[meta_df$beetle_species == sp_underscore]
+  mat_sub <- asv_mat[rownames(asv_mat) %in% samples_sp, , drop = FALSE]
+  if (nrow(mat_sub) < 2) return(NULL)
+  prevalence <- colSums(mat_sub > 0) / nrow(mat_sub)
+  core_asvs  <- names(prevalence[prevalence >= 0.7])
+  if (length(core_asvs) == 0) return(NULL)
+  data.frame(
+    beetle_species = sp,
+    asv_id         = core_asvs,
+    prevalence     = prevalence[core_asvs]
+  )
+})
+
+core_df <- bind_rows(core_per_species)
+cat("Core ASVs gesamt:", nrow(core_df), "\n")
+
+core_summary <- core_df %>%
+  dplyr::count(beetle_species) %>%
+  mutate(beetle_species = factor(beetle_species, levels = species_order))
+
+ggplot(core_summary, aes(x = beetle_species, y = n, fill = beetle_species)) +
+  geom_col() +
+  scale_x_discrete(limits = species_order) +
+  scale_fill_manual(values = setNames(pal_d3("category20")(13), species_order)) +
+  labs(x = NULL, y = "Number of core ASVs",
+       title = "Core mycobiome size per beetle species (prevalence \u2265 70%)") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x  = element_text(angle = 45, hjust = 1, face = "italic"),
+        legend.position = "none")
+
+ggsave(file.path(base_path, "Results/Figures/core_mycobiome_ASV.pdf"),
+       width = 10, height = 6, bg = "white")
+```
+# RESULTS: Indicator Species
+
+```{r}
+# ── Core-Arten (nicht ASVs) pro Käferart, zusammengefasst ────────────────────
+core_species_summary <- core_df %>%
+  left_join(tax_asv %>% select(asv_id, Genus_clean, Species_clean), by = "asv_id") %>%
+  mutate(
+    taxon_name = case_when(
+      is.na(Genus_clean) ~ paste0("Unclassified (", asv_id, ")"),
+      Species_clean %in% c("sp.", NA, "") ~ paste0(Genus_clean, " sp."),
+      TRUE ~ paste0(Genus_clean, " ", Species_clean)
+    )
+  ) %>%
+  group_by(beetle_species, taxon_name) %>%
+  summarise(
+    n_asvs        = n(),
+    max_prevalence = round(max(prevalence) * 100, 1),
+    .groups = "drop"
+  ) %>%
+  arrange(beetle_species, desc(max_prevalence))
+
+print.data.frame(as.data.frame(core_species_summary))
+
+# ── Core-Arten (nicht ASVs) pro Käferart, zusammengefasst ────────────────────
+core_species_summary <- core_df %>%
+  rename(sequence = asv_id) %>%   # core_df$asv_id enthält tatsächlich Sequenzen
+  left_join(tax_asv %>% select(sequence, asv_id, Genus_clean, Species_clean),
+            by = "sequence") %>%
+  mutate(
+    taxon_name = case_when(
+      is.na(Genus_clean) ~ paste0("Unclassified (", asv_id, ")"),
+      Species_clean %in% c("sp.", NA, "") ~ paste0(Genus_clean, " sp."),
+      TRUE ~ paste0(Genus_clean, " ", Species_clean)
+    )
+  ) %>%
+  group_by(beetle_species, taxon_name) %>%
+  summarise(
+    n_asvs        = n(),
+    max_prevalence = round(max(prevalence) * 100, 1),
+    .groups = "drop"
+  ) %>%
+  arrange(beetle_species, desc(max_prevalence))
+
+# Komplette Tabelle anzeigen
+print.data.frame(as.data.frame(core_species_summary))
+
+# Gezielt für Ips typographus
+core_species_summary %>%
+  filter(beetle_species == "Ips typographus") %>%
+  as.data.frame()
+```
+
+---
+
+## 4) Jaccard-Ähnlichkeit zwischen Käferarten (RESULTS)
+
+```{r}
+#| label: jaccard-pairwise
+
+core_sets <- split(core_df$asv_id, core_df$beetle_species)
+species_list <- names(core_sets)   # <-- fehlte: wird unten für jaccard_mat & family_annotation gebraucht
+
+species_pairs <- expand_grid(sp1 = names(core_sets), sp2 = names(core_sets)) %>%
+  filter(sp1 < sp2) %>%
+  rowwise() %>%
+  mutate(
+    jaccard = length(intersect(core_sets[[sp1]], core_sets[[sp2]])) /
+              length(union(core_sets[[sp1]], core_sets[[sp2]]))
+  ) %>%
+  ungroup() %>%
+  left_join(meta_df %>% distinct(beetle_species, family) %>%
+              mutate(beetle_species = gsub("_", " ", beetle_species)),
+            by = c("sp1" = "beetle_species")) %>%
+  rename(family_sp1 = family) %>%
+  left_join(meta_df %>% distinct(beetle_species, family) %>%
+              mutate(beetle_species = gsub("_", " ", beetle_species)),
+            by = c("sp2" = "beetle_species")) %>%
+  rename(family_sp2 = family) %>%
+  mutate(same_family = family_sp1 == family_sp2)
+
+cat("=== Jaccard-Similarity: within- vs. between-family ===\n")
+wilcox_result <- wilcox.test(jaccard ~ same_family, data = species_pairs)
+print(wilcox_result)
+
+species_pairs %>%
+  group_by(same_family) %>%
+  summarise(mean_jaccard = mean(jaccard), median_jaccard = median(jaccard), n_pairs = n()) %>%
+  print()
+```
+
+---
+
+## 5) Jaccard-Heatmap (mit Familien-Annotation)
+
+```{r}
+#| label: jaccard-heatmap-final
+
+# ── Familien-Sortierung ────────────────────────────────────────────────────────
+family_full_to_abbr <- c(
+  "Buprestidae"    = "BU", "Cerambycidae"   = "CE", "Tenebrionidae"  = "TE",
+  "Curculionidae"  = "CU", "Carabidae"      = "CA"
+)
+
+family_annotation <- meta_df %>%
+  distinct(beetle_species, family) %>%
+  mutate(beetle_species = gsub("_", " ", beetle_species),
+         family = family_full_to_abbr[family]) %>%
+  filter(beetle_species %in% species_list) %>%
+  column_to_rownames("beetle_species")
+
+family_order <- c("BU", "CE", "TE", "CU", "CA")
+species_sorted <- family_annotation %>%
+  rownames_to_column("species") %>%
+  mutate(family = factor(family, levels = family_order)) %>%
+  arrange(family) %>%
+  pull(species)
+
+# ── Jaccard-Matrix bauen, sortieren, NUR unteres Dreieck behalten ────────────
+jaccard_mat <- matrix(NA, nrow = length(species_list), ncol = length(species_list),
+                       dimnames = list(species_list, species_list))
+for (sp in species_list) jaccard_mat[sp, sp] <- 1
+for (i in seq_len(nrow(species_pairs))) {
+  sp1 <- species_pairs$sp1[i]; sp2 <- species_pairs$sp2[i]
+  jaccard_mat[sp1, sp2] <- species_pairs$jaccard[i]
+  jaccard_mat[sp2, sp1] <- species_pairs$jaccard[i]
+}
+
+mat_sorted <- jaccard_mat[species_sorted, species_sorted]
+mat_lower  <- mat_sorted
+mat_lower[upper.tri(mat_lower, diag = TRUE)] <- NA
+
+# ── Long-Format für ggplot ─────────────────────────────────────────────────────
+jaccard_plot_df <- mat_lower %>%
+  as.data.frame() %>%
+  rownames_to_column("sp1") %>%
+  pivot_longer(-sp1, names_to = "sp2", values_to = "jaccard") %>%
+  mutate(
+    sp1 = factor(sp1, levels = species_sorted),
+    sp2 = factor(sp2, levels = species_sorted)
+  )
+
+# ── Divergierende Skala: Blau (niedrig) -> Weiß (Schwelle) -> Rot (hoch) ──────
+threshold <- 0.15
+max_val   <- 0.4
+
+diverging_colors <- c("darkslateblue", "deepskyblue2", "#F7F7F7", "#F4A582", "coral1")
+diverging_values <- c(0, 0.5 * (threshold / max_val), threshold / max_val,
+                       0.5 * (threshold / max_val + 1), 1)
+
+color_fun <- colorRampPalette(diverging_colors)
+
+get_color <- function(v, n = 200) {
+  if (is.na(v)) return(NA_character_)
+  frac <- v / max_val
+  idx  <- round(approx(x = diverging_values, y = seq(0, 1, length.out = length(diverging_values)),
+                       xout = frac, rule = 2)$y * (n - 1)) + 1
+  color_fun(n)[idx]
+}
+
+jaccard_plot_df$cell_color <- vapply(jaccard_plot_df$jaccard, get_color, character(1))
+unique_colors <- sort(unique(na.omit(jaccard_plot_df$cell_color)))
+jaccard_plot_df$cell_color_factor <- factor(jaccard_plot_df$cell_color, levels = unique_colors)
+
+# ── Hauptplot ───────────────────────────────────────────────────────────────────
+p_main <- ggplot(jaccard_plot_df, aes(x = sp2, y = fct_rev(sp1))) +
+  geom_tile(aes(fill = cell_color_factor), color = "white", linewidth = 0.6) +
+  scale_fill_manual(values = setNames(unique_colors, unique_colors),
+                     na.value = "white", guide = "none") +
+  labs(x = NULL, y = NULL, title = "") +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size=14),
+    axis.text.y = element_text(face = "italic", size=14),
+    panel.grid  = element_blank()
+  )
+
+# ── Separate Legenden-Grafik ───────────────────────────────────────────────────
+n_steps <- 200
+legend_df <- data.frame(y = seq(0, max_val, length.out = n_steps))
+legend_df$color_pos <- sapply(legend_df$y / max_val, function(f) {
+  approx(x = seq(0, 1, length.out = length(diverging_values)), y = diverging_values,
+         xout = f, rule = 2)$y
+})
+
+legend_plot <- ggplot(legend_df, aes(x = 1, y = y, fill = color_pos)) +
+  geom_tile(height = max_val / n_steps * 1.01) +
+  scale_fill_gradientn(colours = diverging_colors, values = diverging_values,
+                        limits = c(0, 1), guide = "none") +
+  scale_y_continuous(breaks = seq(0, max_val, by = 0.05),
+                      labels = sprintf("%.2f", seq(0, max_val, by = 0.05)),
+                      position = "right", expand = c(0, 0)) +
+  labs(x = NULL, y = NULL, title = "Jaccard Index") +
+  theme_void() +
+  theme(
+    axis.text.y = element_text(size = 14, hjust = 0, margin = margin(l = 4)),
+    plot.title  = element_text(size = 14, hjust = 0.5, face = "bold",
+    margin = margin(b = 15)),
+    plot.margin = margin(l = 2, r = 12, t = 5, b = 5)
+  )
+
+# ── Zusammenfügen & speichern ──────────────────────────────────────────────────
+combined <- p_main + legend_plot + plot_layout(widths = c(10, 1))
+combined
+
+ggsave(file.path(base_path, "Results/Figures/jaccard_heatmap.pdf"),
+       width = 10, height = 6, bg = "white")
+```
+
+# RESULTS: Welche Core-Arten werden geteilt?
+
+```{r}
+# ── Core-Arten, die zwischen Paaren mit Jaccard > 0.25 geteilt werden ────────
+high_similarity_pairs <- list(
+  c("Anthaxia quadripunctata", "Anthaxia fulgurans"),
+  c("Anthaxia fulgurans", "Stenurella melanura"),
+  c("Stenurella melanura", "Pachytodes cerambyciformis")
+)
+
+for (pair in high_similarity_pairs) {
+  sp1 <- pair[1]; sp2 <- pair[2]
+  shared <- intersect(core_sets[[sp1]], core_sets[[sp2]])
+  shared_named <- tax_asv %>%
+    filter(sequence %in% shared) %>%
+    mutate(taxon_name = case_when(
+      is.na(Genus_clean) ~ paste0("Unclassified (", asv_id, ")"),
+      Species_clean %in% c("sp.", NA, "") ~ paste0(Genus_clean, " sp."),
+      TRUE ~ paste0(Genus_clean, " ", Species_clean)
+    )) %>%
+    pull(taxon_name)
+
+  cat("\n===", sp1, "vs.", sp2, "(", length(shared), "geteilte Core-ASVs) ===\n")
+  print(shared_named)
+}
+
+# Wie viele ASVs (nicht aggregierte Arten) haben die beiden Anthaxia-Arten im Core?
+cat("Core-ASVs A. quadripunctata:", length(core_sets[["Anthaxia quadripunctata"]]), "\n")
+cat("Core-ASVs A. fulgurans:", length(core_sets[["Anthaxia fulgurans"]]), "\n")
+
+shared <- intersect(core_sets[["Anthaxia quadripunctata"]], core_sets[["Anthaxia fulgurans"]])
+union_count <- length(union(core_sets[["Anthaxia quadripunctata"]], core_sets[["Anthaxia fulgurans"]]))
+cat("Geteilte ASVs:", length(shared), "\n")
+cat("Vereinigungsmenge (ASVs):", union_count, "\n")
+cat("Jaccard (ASV-Ebene):", length(shared) / union_count, "\n")
+```
+
+
+## 6) Abgleich mit Popa et al. (2026) Core/Potential-Core-Mycobiome
+
+::: callout-note
+Verwendet `popa_core_species.R` (extrahiert aus den Supplementary
+Tables von Popa et al. 2026). Datei muss vorher per `source()`
+eingelesen werden.
+:::
+
+```{r}
+#| label: popa-comparison
+
+source(file.path(base_path, "Data/Metadata/popa_core_species.R"))
+
+cat("Core mycobiome Arten (Popa et al. 2026):", length(popa_core_14), "\n")
+cat("Potential core mycobiome Arten (Popa et al. 2026):", length(popa_potential_150), "\n")
+
+# ── Alle klassifizierten Taxa in Ips-Proben (unabhängig von IndVal) ───────────
+asv_long <- as.data.frame(otu_table(ps)) %>%
+  rownames_to_column("sequence") %>%
+  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
+  mutate(sample = gsub("^X", "", sample)) %>%
+  filter(reads > 0) %>%
+  left_join(tax_asv %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+  left_join(meta_df %>% select(sample, beetle_species), by = "sample")
+
+ips_all_taxa <- asv_long %>%
+  filter(beetle_species == "Ips_typographus") %>%
+  filter(!is.na(Genus_clean)) %>%
+  mutate(full_species = paste(Genus_clean, Species_clean)) %>%
+  group_by(Genus_clean, Species_clean, full_species) %>%
+  summarise(n_samples = n_distinct(sample), total_reads = sum(reads), .groups = "drop") %>%
+  arrange(desc(total_reads))
+
+ips_core_match <- ips_all_taxa %>%
+  mutate(popa_category = case_when(
+    full_species %in% popa_core_14        ~ "core mycobiome",
+    full_species %in% popa_potential_150  ~ "potential core mycobiome",
+    TRUE ~ "not listed"
+  ))
+
+print(ips_core_match, n = Inf)
+
+cat("\n=== Zusammenfassung ===\n")
+cat("Core mycobiome Treffer:", sum(ips_core_match$popa_category == "core mycobiome"),
+    "von", length(popa_core_14), "\n")
+cat("Potential core Treffer:", sum(ips_core_match$popa_category == "potential core mycobiome"),
+    "von", length(popa_potential_150), "\n")
+cat("Nicht gelistet:", sum(ips_core_match$popa_category == "not listed"), "\n")
+
+cat("\nAnteil unter den Top-10 abundantesten Taxa:\n")
+top10_match <- ips_core_match %>% slice_max(total_reads, n = 10)
+cat(sum(top10_match$popa_category != "not listed"), "von 10\n")
+print(top10_match)
+```
+Diejenigen, die nur auf Gattungsebene klassifiziert wurden werden vermutl. bei Popa nicht gefunden
+---
+
+## 7) Session Info
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```

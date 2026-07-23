@@ -1,0 +1,500 @@
+---
+title: "04_OTU.WA"
+format: html
+editor: visual
+---
+
+## Weighted abundances nach Gotzsche et al. der OTUs
+
+# Pakete laden
+
+```{r}
+library(Biostrings)
+library(tidyverse)
+library(openxlsx)
+```
+
+# Daten laden
+
+```{r}
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+otu_mat_new <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_new.rds"))
+
+ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v2/phyloseq_all.rds"))
+
+otu_mat_new <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_new.rds"))
+
+# ── Metadaten ─────────────────────────────────────────────────────────────────
+meta_df <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("sample") %>%
+  mutate(sample = gsub("^X", "", sample))
+
+asv_map <- data.frame(
+  asv_id   = paste0("ASV", seq_along(taxa_names(ps))),
+  sequence = taxa_names(ps)
+)
+
+# ── Taxonomie aus phyloseq extrahieren ────────────────────────────────────────
+tax_df <- as.data.frame(tax_table(ps))
+tax_df$ASV         <- rownames(tax_df)
+tax_df$Genus_clean   <- gsub("g__", "", tax_df$Genus)
+tax_df$Species_clean <- gsub("s__", "", tax_df$Species)
+```
+
+```{r}
+# Nach VSEARCH: OTU-Tabelle erstellen
+
+otu_mat_t <- t(otu_mat_new)  # OTUs × Samples
+str(otu_mat_t)
+
+# Pro Käferart weighted abundance berechnen
+keep_otus_list <- lapply(unique(meta_df$beetle_species), function(sp) {
+  samples_sp <- meta_df$sample[meta_df$beetle_species == sp]
+  otu_sp     <- otu_mat_t[, samples_sp, drop = FALSE]
+  
+  total_reads_sp <- rowSums(otu_sp)
+  frequency_sp   <- rowSums(otu_sp > 0)
+  wa_sp          <- total_reads_sp * frequency_sp
+  
+  wa_sorted <- sort(wa_sp[wa_sp > 0], decreasing = TRUE)
+  cumsum_wa <- cumsum(wa_sorted)
+  threshold <- 0.5 * sum(wa_sorted)
+  names(wa_sorted)[cumsum_wa <= threshold]
+})
+
+keep_otus <- unique(unlist(keep_otus_list))
+cat("OTUs behalten:", length(keep_otus), "\n")
+
+# Beispiel: Bolitophagus_reticulatus
+sp <- unique(meta_df$beetle_species)[1] 
+samples_sp <- meta_df$sample[meta_df$beetle_species == sp]
+otu_sp <- otu_mat_t[, samples_sp, drop = FALSE]
+
+total_reads_sp <- rowSums(otu_sp)
+frequency_sp   <- rowSums(otu_sp > 0)
+wa_sp          <- total_reads_sp * frequency_sp
+
+wa_sorted <- sort(wa_sp[wa_sp > 0], decreasing = TRUE)
+
+# Wie viele OTUs machen 50% aus?
+cumsum_wa <- cumsum(wa_sorted)
+threshold <- 0.5 * sum(wa_sorted)
+cat("Art:", sp, "\n")
+cat("OTUs gesamt:", length(wa_sorted), "\n")
+cat("OTUs bis 50%:", sum(cumsum_wa <= threshold), "\n")
+cat("Top-5 weighted abundances:\n")
+print(head(wa_sorted))
+
+#Bei Bolitophagus macht der Gotzsche-Ansatz gar keinen Sinn, weil eine einzelne Art schon >50% der WA ausmacht
+
+# Welche sind die Top 5?
+top5_asvs <- c("ASV6", "ASV23", "ASV512", "ASV45", "ASV180")
+seqs <- asv_map$sequence[asv_map$asv_id %in% top5_asvs]
+
+tax_df[rownames(tax_df) %in% seqs, c("Genus_clean", "Species_clean", "Family")] %>%
+  rownames_to_column("sequence") %>%
+  left_join(asv_map, by = "sequence") %>%
+  select(asv_id, Genus_clean, Species_clean, Family) %>%
+  arrange(match(asv_id, top5_asvs))
+
+# Ähnlichkeit zwischen ASV23 und ASV45
+pid(pairwiseAlignment(
+  DNAString(asv_map$sequence[asv_map$asv_id == "ASV23"]),
+  DNAString(asv_map$sequence[asv_map$asv_id == "ASV45"])
+))
+# Geprüft, ob ASV23 und ASV45 <97% Ähnlichkeit haben (ob das Clustering geklappt hat) --> 96.52% hat also geklappt
+
+```
+
+## Wie weighted abundance definieren?
+
+Gotzsches Ansatz funktioniert hier nicht, unter den "Top 5" ist zweimal die gleiche Spezies, und die am häufigsten vorkommenden OTUs sind in Unite nicht hinterlegt (ASV6 und ASV180)
+
+# ASV6 und ASV180 noch bei Genbank blasten
+
+```{r}
+#| echo: false
+#| label: Blastn_Genbank
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV6"]) # Käfer-DNA, sollte rausgefiltert werden
+cat(asv_map$sequence[asv_map$asv_id == "ASV180"]) # Schlecht klassifizierter Pilz, bei Genbank
+
+tax_df[rownames(tax_df) == asv_map$sequence[asv_map$asv_id == "ASV6"], ]
+# Problem: Käfer-DNA ist bei UNITE unter Kindom = Fungi hinterlegt
+
+# Unclassified 50 mit den häufigsten reads prüfen
+# Reads pro unclassified ASV summieren
+unclassified_asvs <- tax_df %>%
+  filter(Phylum == "p__Fungi_phy_Incertae_sedis" | is.na(Phylum)) %>%
+  pull(ASV)
+
+unclassified_reads <- rowSums(otu_table(ps)[unclassified_asvs, ])
+
+# Top 50 nach Reads
+top50_unclassified <- sort(unclassified_reads, decreasing = TRUE)[1:50]
+top50_ids <- asv_map$asv_id[asv_map$sequence %in% names(top50_unclassified)]
+
+# Als FASTA exportieren
+top50_seqs <- asv_map %>%
+  filter(asv_id %in% top50_ids)
+
+fasta_lines <- paste0(">", top50_seqs$asv_id, "\n", top50_seqs$sequence)
+
+writeLines(
+  fasta_lines,
+  file.path(base_path, "Data/Final/unclassified_top50.fasta")
+)
+
+cat("FASTA exportiert:", nrow(top50_seqs), "Sequenzen\n")
+
+# Blast zeigt, die meisten unklassifizierten "Pilze" sind Käfer oder Pflanzen-DNA, die fälschlicherweise als Kingdom=Fungi klassifiziert wurden in Unite --> Rausfiltern!
+```
+
+# Gotzsche mit Filter + Dedup.
+
+```{r}
+# ── Chunk 1: Filter ───────────────────────────────────────────────────────────
+ps_filtered <- subset_taxa(ps,
+  Phylum != "p__Fungi_phy_Incertae_sedis" & !is.na(Phylum))
+
+cat("ASVs vorher:", ntaxa(ps), "\n")
+cat("ASVs nachher:", ntaxa(ps_filtered), "\n")
+cat("Entfernt:", ntaxa(ps) - ntaxa(ps_filtered), "\n")
+
+# Gefilterte Sequenzen → gefilterte OTU-IDs
+good_sequences <- taxa_names(ps_filtered)
+good_asv_ids   <- asv_map$asv_id[asv_map$sequence %in% good_sequences]
+
+# otu_mat_new direkt filtern
+otu_mat_f   <- otu_mat_new[, colnames(otu_mat_new) %in% good_asv_ids]
+otu_mat_t_f <- t(otu_mat_f)
+
+cat("Gefilterte OTU-Tabelle:", nrow(otu_mat_f), "Samples ×",
+    ncol(otu_mat_f), "OTUs\n")
+
+# Taxonomie für gefilterte OTUs
+tax_df_f <- as.data.frame(tax_table(ps_filtered))
+tax_df_f$ASV           <- rownames(tax_df_f)
+tax_df_f$Genus_clean   <- gsub("g__", "", tax_df_f$Genus)
+tax_df_f$Species_clean <- gsub("s__", "", tax_df_f$Species)
+
+# ── Chunk 2: Deduplizierung + Götzsche 80% ────────────────────────────────────
+# OTU → Species mapping
+otu_species <- asv_map %>%
+  filter(sequence %in% good_sequences) %>%
+  left_join(tax_df_f %>% select(ASV, Genus_clean, Species_clean),
+            by = c("sequence" = "ASV")) %>%
+  mutate(species_label = ifelse(
+    !is.na(Species_clean) & Species_clean != "",
+    paste(Genus_clean, Species_clean),
+    ifelse(!is.na(Genus_clean),
+           paste0(Genus_clean, " sp."),
+           "unclassified")
+  ))
+
+# Weighted abundance mit Deduplizierung + Götzsche
+keep_otus_list_f <- lapply(unique(meta_df$beetle_species), function(sp) {
+  samples_sp <- meta_df$sample[meta_df$beetle_species == sp]
+  otu_sp     <- otu_mat_t_f[, samples_sp, drop = FALSE]
+  
+  total_reads_sp <- rowSums(otu_sp)
+  frequency_sp   <- rowSums(otu_sp > 0)
+  wa_sp          <- total_reads_sp * frequency_sp
+  
+  data.frame(otu = names(wa_sp), wa = wa_sp) %>%
+    filter(wa > 0) %>%
+    left_join(otu_species %>% select(asv_id, species_label),
+              by = c("otu" = "asv_id")) %>%
+    group_by(species_label) %>%
+    slice_max(wa, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    arrange(desc(wa)) -> wa_df
+  
+  cumsum_wa <- cumsum(wa_df$wa)
+  threshold <- 0.9 * sum(wa_df$wa)
+  n_keep    <- max(1, sum(cumsum_wa <= threshold))
+  wa_df$otu[seq_len(n_keep)]
+})
+
+keep_otus_f <- unique(unlist(keep_otus_list_f))
+cat("OTUs behalten:", length(keep_otus_f), "\n")
+
+# OTUs pro Käferart
+sapply(keep_otus_list_f, length) %>%
+  setNames(gsub("_", " ", unique(meta_df$beetle_species))) %>%
+  sort() %>%
+  print()
+```
+
+Der Gotzsche-Filter macht wegen der Dominanz einzelner Taxa keinen Sinn, es werden zu viele rausgefiltert.
+
+```{r}
+# Mit Filter, aber ohne Deduplizierung
+
+saveRDS(otu_mat_t_f, file.path(base_path, "Data/Final/OTU_v2/otu_mat_t_f.rds"))
+saveRDS(otu_mat_f,   file.path(base_path, "Data/Final/OTU_v2/otu_mat_f.rds"))
+saveRDS(keep_otus_f, file.path(base_path, "Data/Final/OTU_v2/keep_otus_f.rds"))
+
+# Einlesen in zukünftigen Sessions:
+# otu_mat_t_f <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_t_f.rds"))
+# otu_mat_f   <- readRDS(file.path(base_path, "Data/Final/OTU_v2/otu_mat_f.rds"))
+# keep_otus_f <- readRDS(file.path(base_path, "Data/Final/OTU_v2/keep_otus_f.rds"))
+```
+
+Im Folgenden: Einzelne Checks zu den Daten, welche in die Diskussion kommen.
+
+# Artenliste Ips typographus
+
+```{r}
+
+# Gefilterte Sequenzen → gefilterte OTU-IDs
+good_sequences <- taxa_names(ps_filtered)
+good_asv_ids   <- asv_map$asv_id[asv_map$sequence %in% good_sequences]
+
+# otu_mat_new direkt filtern
+otu_mat_f   <- otu_mat_new[, colnames(otu_mat_new) %in% good_asv_ids]
+otu_mat_t_f <- t(otu_mat_f)
+
+# OTU → Species mapping
+otu_species <- asv_map %>%
+  filter(sequence %in% good_sequences) %>%
+  left_join(tax_df_f %>% select(ASV, Genus_clean, Species_clean),
+            by = c("sequence" = "ASV")) %>%
+  mutate(species_label = ifelse(
+    !is.na(Species_clean) & Species_clean != "",
+    paste(Genus_clean, Species_clean),
+    ifelse(!is.na(Genus_clean),
+           paste0(Genus_clean, " sp."),
+           "unclassified")
+  ))
+otu_mat_f <-otu_mat_new
+# Artenliste Ips typographus nach Filter
+ips_samples <- meta_df$sample[meta_df$beetle_species == "Ips_typographus"]
+
+# Reads für Ips aus gefilterter OTU-Tabelle
+
+ips_otus <- otu_mat_f[rownames(otu_mat_f) %in% ips_samples, ]
+
+# Summe über alle Ips-Samples
+ips_reads <- colSums(ips_otus)
+ips_reads <- sort(ips_reads[ips_reads > 0], decreasing = TRUE)
+
+# Taxonomie dazu
+ips_list <- data.frame(otu_id = names(ips_reads), total_reads = ips_reads) %>%
+  left_join(otu_species %>% select(asv_id, Genus_clean, Species_clean, species_label),
+            by = c("otu_id" = "asv_id")) %>%
+  left_join(tax_df_f %>% select(ASV, Phylum, Class, Order, Family) %>%
+              rownames_to_column("sequence") %>%
+              left_join(asv_map %>% filter(sequence %in% good_sequences),
+                        by = "sequence") %>%
+              select(asv_id, Phylum, Class, Order, Family),
+            by = c("otu_id" = "asv_id")) %>%
+  mutate(
+    Phylum = gsub("p__", "", Phylum),
+    Class  = gsub("c__", "", Class),
+    Order  = gsub("o__", "", Order),
+    Family = gsub("f__", "", Family)
+  ) %>%
+  select(otu_id, species_label, Phylum, Class, Order, Family, 
+         Genus_clean, Species_clean, total_reads)
+
+# Als CSV exportieren
+write.csv(ips_list, 
+          file.path(base_path, "Data/Final/Ips_typographus_fungal_list.csv"),
+          row.names = FALSE)
+
+write.xlsx(ips_list,
+           file.path(base_path, "Data/Final/Ips_typographus_fungal_list.xlsx"),
+           sheetName = "Ips typographus fungi",
+           rowNames  = FALSE)
+
+cat("Arten gefunden:", nrow(ips_list), "\n")
+cat("Reads gesamt:", sum(ips_list$total_reads), "\n")
+
+# Noch manuell blasten
+cat(asv_map$sequence[asv_map$asv_id == "ASV2630"]) 
+#	Meyerozyma carpophila
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV216"]) 
+# Meyerozyma carpophila
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV2053"])
+# Yarrowie sp. (stimmt überein)
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV87"])
+# passt
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV465"])
+# passt
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV921"])
+# passt
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV2792"])
+# passt
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV806"])
+# passt
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV163"])
+
+
+
+```
+
+# Warum ist Ophiostoma bicolor nicht dabei?
+
+```{r}
+# Im ungefilterten ps suchen
+tax_df %>%
+  filter(grepl("Ophiostoma", Species_clean)) %>%
+  select(Genus_clean, Species_clean, Phylum)
+
+# Nicht dabei
+
+# 2. Wurde es durch den Incertae sedis Filter entfernt?
+as.data.frame(tax_table(ps)) %>%
+  mutate(Genus_clean = gsub("g__", "", Genus), Species_clean = gsub("s--", "", Species)) %>%
+  filter(grepl("Ophiostoma", Genus_clean)) %>%
+  select(Phylum, Class, Order, Family, Genus_clean, Species_clean)
+
+# Nein, weil sie als Ascomycota identifiziert wurden
+
+as.data.frame(tax_table(ps)) %>%
+  mutate(
+    Order_clean  = gsub("o__", "", Order),
+    Family_clean = gsub("f__", "", Family),
+    Class_clean  = gsub("c__", "", Class)
+  ) %>%
+  filter(grepl("Ophiostom", Order_clean, ignore.case = TRUE)) %>%
+  count(Order_clean, Family_clean) %>%
+  arrange(Order_clean, desc(n))
+
+# Ophiostoma wurde 8 mal identifiziert
+
+# Welche Sequenzen?
+
+ophio_asvs <- as.data.frame(tax_table(ps)) %>%
+  mutate(Order_clean = gsub("o__", "", Order)) %>%
+  filter(grepl("Ophiostom", Order_clean, ignore.case = TRUE)) %>%
+  rownames()
+
+# Reads in Ips-Samples
+ips_samples <- meta_df$sample[meta_df$beetle_species == "Ips_typographus"]
+
+otu_table(ps)[ophio_asvs, ips_samples] %>%
+  as.data.frame() %>%
+  filter(rowSums(.) > 0)
+
+# Welche OTU-Centroids entsprechen diesen ASVs?
+
+ophio_ids <- asv_map$asv_id[asv_map$sequence %in% ophio_asvs]
+intersect(ophio_ids, colnames(otu_mat_new))
+
+otu_mat_new[ips_samples, intersect(ophio_ids, colnames(otu_mat_new))] %>%
+  colSums() %>%
+  sort(decreasing = TRUE)
+# ASV 1335
+
+asv_map %>%
+  filter(asv_id %in% c("ASV1335")) %>%
+  left_join(tax_df %>% select(ASV, Genus_clean, Species_clean, Order),
+            by = c("sequence" = "ASV")) %>%
+  select(asv_id, Genus_clean, Species_clean, Order)
+
+cat(asv_map$sequence[asv_map$asv_id == "ASV1335"])
+```
+
+```{r}
+# Alle Ophiostoma-ähnlichen in tax_df
+tax_df %>%
+  filter(grepl("Ophiostoma|bicolor", 
+               paste(Genus_clean, Species_clean), 
+               ignore.case = TRUE)) %>%
+  select(Genus_clean, Species_clean, Order, Family)
+
+# Ophiostoma einzeln blasten:
+
+# Alle Ophiostoma-Sequenzen ausgeben
+ophiostoma_seqs <- tax_df %>%
+  filter(Genus_clean == "Ophiostoma") %>%
+  rownames()
+
+ophiostoma_map <- asv_map %>%
+  filter(sequence %in% ophiostoma_seqs) %>%
+  left_join(tax_df %>% select(ASV, Genus_clean, Species_clean),
+            by = c("sequence" = "ASV"))
+
+# FASTA exportieren
+fasta_lines <- paste0(">", ophiostoma_map$asv_id, 
+                      "_", ophiostoma_map$Genus_clean,
+                      "_", ifelse(is.na(ophiostoma_map$Species_clean), 
+                                  "sp", ophiostoma_map$Species_clean),
+                      "\n", ophiostoma_map$sequence)
+
+writeLines(fasta_lines,
+           file.path(base_path, "Data/Final/ophiostoma_sequences.fasta"))
+
+cat("Exportiert:", length(fasta_lines), "Sequenzen\n")
+
+# Beim Blasten: Kein Ophiostoma bicolor
+
+tax_df %>% 
+  filter(grepl("Ophiostoma", Genus_clean, ignore.case = TRUE)) %>%
+  select(ASV, Genus_clean, Species_clean)
+
+tax_df %>%
+  filter(grepl("Ophiostoma", Genus_clean)) %>%
+  select(ASV, Genus_clean, Species_clean) %>%
+  left_join(asv_map, by = c("ASV" = "sequence")) %>%  # Sequenz → ASV-ID
+  left_join(
+    colSums(otu_mat_new) %>% as.data.frame() %>%
+      setNames("total_reads") %>% rownames_to_column("asv_id"),
+    by = "asv_id"
+  ) %>%
+  select(asv_id, Genus_clean, Species_clean, total_reads)
+
+# M. guilliermondii ASV-Sequenz rausholen
+tax_df %>%
+  filter(grepl("guilliermondii", Species_clean, ignore.case = TRUE)) %>%
+  left_join(asv_map, by = c("ASV" = "sequence")) %>%
+  select(asv_id, Genus_clean, Species_clean, ASV) %>%
+  mutate(fasta = paste0(">", asv_id, "_", Species_clean, "\n", ASV)) %>%
+  pull(fasta) %>%
+  cat(sep = "\n\n")
+
+# Beim Blasten: Teilweise kommt auch Meyerozyma carpophila oder M.caribbica als 100% Hit -> Discussion
+```
+
+# Manuel BLAST
+
+```{r}
+# Unklassifizierte OTUs mit > 2000 reads
+all_unclassified <- otu_mat_new %>%
+  colSums() %>%
+  as.data.frame() %>%
+  setNames("total_reads") %>%
+  rownames_to_column("otu_id") %>%
+  left_join(asv_map, by = c("otu_id" = "asv_id")) %>%
+  left_join(tax_df %>% select(ASV, Phylum, Class, Order, Family,
+                               Genus_clean, Species_clean),
+            by = c("sequence" = "ASV")) %>%
+  filter(is.na(Genus_clean) | Genus_clean == "" |
+         grepl("Incertae_sedis", Genus_clean)) %>%
+  filter(!grepl("Incertae_sedis", Phylum) & !is.na(Phylum)) %>%
+  filter(total_reads > 2000) %>%
+  arrange(desc(total_reads)) %>%
+  select(otu_id, Phylum, Class, Order, Family, total_reads)
+
+cat("Unklassifizierte OTUs > 2000 reads:", nrow(all_unclassified), "\n")
+print(all_unclassified)
+
+# Als FASTA exportieren
+fasta_lines <- paste0(">", all_unclassified$otu_id,
+                      "_", all_unclassified$Order,
+                      "\n", all_unclassified$sequence)
+
+writeLines(fasta_lines,
+           file.path(base_path, "Data/Final/unclassified_abundant.fasta"))
+```

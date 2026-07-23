@@ -1,0 +1,132 @@
+---
+title: "DADA2 – Qualitätskontrolle"
+subtitle: "Pilzgemeinschaften auf Käfern | Masterarbeit"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    toc-title: "Inhalt"
+    code-fold: true
+    theme: flatly
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+## Übersicht
+
+Dieses Dokument zeigt die Qualitätsprofile der getrimmten FASTQ-Dateien.
+Ziel ist es, geeignete `truncLen`-Werte für den späteren DADA2-Schritt zu bestimmen.
+
+> **Primer:** FWD = ITS3_KYO2 (`GATGAAGAACGYAGYRAA`) | REV = ITS4_KYO2 (`RBTTTCTTTTCCTCCGCT`)
+
+---
+
+## 1) Pakete laden
+
+```{r, message=FALSE}
+#| label: packages
+#| message: false
+#| warning: false
+
+library(dada2)
+```
+
+
+## 2) Dateien einlesen
+
+```{r}
+#| label: load-files
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+# Neue Ordnerstruktur: Trimmed_nextseq für EC24_245 und Buse
+# Trimmed (original) für 3XX und Popa
+
+runs <- list(
+  EC24_245 = file.path(base_path, "Data/Processed/Trimmed_nextseq/EC24_245"),
+  `3XX`    = file.path(base_path, "Data/Processed/Trimmed/3XX"),
+  Popa     = file.path(base_path, "Data/Processed/Trimmed/Popa"),
+  Buse     = file.path(base_path, "Data/Processed/Trimmed_nextseq/Buse")
+)
+
+# Dateien pro Lauf einlesen
+for (run_name in names(runs)) {
+  R1 <- sort(list.files(runs[[run_name]], pattern = "_R1_trimmed.fastq", full.names = TRUE))
+  R2 <- sort(list.files(runs[[run_name]], pattern = "_R2_trimmed.fastq", full.names = TRUE))
+  cat(run_name, "– R1:", length(R1), "| R2:", length(R2), "\n")
+}
+```
+
+---
+
+## 3) Qualitätsprofile
+
+::: callout-tip
+## Wie liest man diese Plots?
+- **Grüne Linie** = mittlerer Qualitätsscore (Phred) pro Position
+- **Orange Linie** = Median
+- **Q30** = 99,9% korrekt → sehr gut ✓
+- **Q20** = 99,0% korrekt → akzeptabel
+- Unter Q20 → hier sollte getrimmt werden!
+
+Notieren, bei welcher Position (bp) die Qualität deutlich abfällt – das wird der `truncLen`-Wert.
+:::
+
+### R1 – Reverse Reads
+
+```{r}
+#| label: quality-profiles
+#| warning: false
+#| message: false
+
+# EC24_245 R1
+R1_ec24 <- sort(list.files(runs[["EC24_245"]], 
+                            pattern = "_R1_trimmed.fastq", 
+                            full.names = TRUE))
+pdf(file.path(base_path, "Results/Quality control/nextseq_trim/quality_profile_EC24_245_R1.pdf"),
+    width = 12, height = 6)
+plotQualityProfile(R1_ec24[1:3])
+dev.off()
+
+# EC24_245 R2
+R2_ec24 <- sort(list.files(runs[["EC24_245"]], 
+                            pattern = "_R2_trimmed.fastq", 
+                            full.names = TRUE))
+pdf(file.path(base_path, "Results/Quality control/nextseq_trim/quality_profile_EC24_245_R2.pdf"),
+    width = 12, height = 6)
+plotQualityProfile(R2_ec24[1:3])
+dev.off()
+
+# Buse R1
+R1_buse <- sort(list.files(runs[["Buse"]], 
+                            pattern = "_R1_trimmed.fastq", 
+                            full.names = TRUE))
+pdf(file.path(base_path, "Results/Quality control/nextseq_trim/quality_profile_Buse_R1.pdf"),
+    width = 12, height = 6)
+plotQualityProfile(R1_buse[1:3])
+dev.off()
+
+# Buse R2
+R2_buse <- sort(list.files(runs[["Buse"]], 
+                            pattern = "_R2_trimmed.fastq", 
+                            full.names = TRUE))
+pdf(file.path(base_path, "Results/Quality control/nextseq_trim/quality_profile_Buse_R2.pdf"),
+    width = 12, height = 6)
+plotQualityProfile(R2_buse[1:3])
+dev.off()
+```
+
+---
+
+## 5) Sessioninfo
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```

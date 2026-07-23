@@ -1,0 +1,346 @@
+---
+title: "03_build_phyloseq_v3"
+subtitle: "Zusammenführen von ASV-Tabelle, Taxonomie und Metadaten zu einem phyloseq-Objekt"
+author: "user"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+## Übersicht
+
+Dieses Skript schließt die Lücke zwischen der DADA2-Pipeline
+(`02_dada2_pipeline_v3.qmd`, liefert `seqtab_all.rds`) und der
+Cluster-Taxonomie-Zuweisung (`assign_taxonomy_v3.R`, liefert
+`taxonomy_all.csv`). Es verknüpft beide mit den Sample-Metadaten
+zu einem einzigen `phyloseq`-Objekt (`phyloseq_all.rds`), das von
+allen nachfolgenden Skripten (Filtering, Diversität, etc.) verwendet wird.
+
+**Dieser Durchlauf integriert zusätzlich den fünften Sequenzierlauf
+`EC25_600_a_01`** (26 neue Proben: *Melinopterus sphacelatus*,
+*Nimbus contaminatus*, *Uleiota planatus*, *Corymbia rubra* -- nur
+*Corymbia rubra* wird später in `04_filter_taxonomy_v3.qmd` in die
+finale Analyse übernommen).
+
+::: callout-warning
+## Proben-Namen-Inkonsistenz
+
+`seqtab_all`-Zeilennamen folgen je nach Sequenzierlauf unterschiedlichen
+Formaten, die nicht direkt mit `sample_id` in `metadata_all.csv`
+übereinstimmen:
+
+- **EC24_245**: Rohdatei-Namen, z.B. `ns2024-18-EC24-245-0001-FITS-A01-iA_S1_L001`
+- **3XX**: entspricht `fastq_id`, nicht `sample_id`, z.B. `300_S300_L001`
+- **Popa**: Bindestrich statt Unterstrich + Suffix, z.B. `Popa-Lotharpfad_S83_L001`,
+  inkl. einer Negativkontrolle `Popa-PCR-negativ_S87_L001`
+- **Buse / EC25_600_a_01**: entsprechen bereits direkt `sample_id`
+
+Kapitel 4 gleicht das automatisch ab; verbleibende, nicht zuordenbare
+Proben (v.a. Negativkontrollen) werden in Kapitel 5 identifiziert und
+entfernt, bevor das `phyloseq`-Objekt gebaut wird.
+:::
+
+---
+
+## 1) Pakete laden
+
+```{r}
+#| label: packages
+
+library(phyloseq)
+library(dplyr)
+library(tibble)
+library(dada2)
+```
+
+---
+
+## 2) ASV-Tabelle: neuen Lauf mit bestehendem seqtab_all zusammenführen
+
+```{r}
+#| label: merge-seqtab
+
+base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+
+seqtab_all_old <- readRDS(file.path(base_path, "Data/Final/DADA2_Output_v3/seqtab_all.rds"))
+seqtab_new     <- readRDS(file.path(base_path,
+                          "Data/Final/DADA2_Output_v3/EC25_600_a_01/seqtab_nochim.rds"))
+
+cat("seqtab_all (aktuell):", nrow(seqtab_all_old), "Proben x", ncol(seqtab_all_old), "ASVs\n")
+cat("EC25_600_a_01:        ", nrow(seqtab_new), "Proben x", ncol(seqtab_new), "ASVs\n")
+
+# ── Check: wurden die neuen Proben bereits gemerged? (verhindert Duplikat-Fehler
+# bei erneutem Durchlauf dieses Skripts) ────────────────────────────────────
+already_merged <- all(rownames(seqtab_new) %in% rownames(seqtab_all_old))
+
+if (already_merged) {
+  cat("EC25_600_a_01-Proben sind bereits in seqtab_all enthalten -- kein erneutes Merging noetig.\n")
+  seqtab_all <- seqtab_all_old
+} else {
+  cat("Fuehre Merge durch...\n")
+  seqtab_all <- mergeSequenceTables(seqtab_all_old, seqtab_new)
+
+  backup_seqtab_path <- file.path(base_path,
+                                  "Data/Final/DADA2_Output_v3/seqtab_all_backup_pre_EC25_600_a01.rds")
+  if (!file.exists(backup_seqtab_path)) {
+    file.copy(file.path(base_path, "Data/Final/DADA2_Output_v3/seqtab_all.rds"),
+              backup_seqtab_path)
+    cat("Backup gespeichert:", backup_seqtab_path, "\n")
+  }
+
+  saveRDS(seqtab_all, file.path(base_path, "Data/Final/DADA2_Output_v3/seqtab_all.rds"))
+  cat("seqtab_all.rds aktualisiert und gespeichert.\n")
+}
+
+cat("seqtab_all final:", nrow(seqtab_all), "Proben x", ncol(seqtab_all), "ASVs\n")
+```
+
+---
+
+## 3) Taxonomie und Metadaten laden
+
+```{r}
+#| label: load-data
+
+taxonomy_final_path <- file.path(base_path, "Data/Final/Taxonomy_v3/taxonomy_v3_final.csv")
+taxonomy_all_path   <- file.path(base_path, "Data/Final/Taxonomy_v3/taxonomy_all.csv")
+
+file.copy(taxonomy_final_path, taxonomy_all_path, overwrite = TRUE)
+cat("taxonomy_v3_final.csv als taxonomy_all.csv übernommen.\n")
+
+taxonomy_all <- read.csv(taxonomy_all_path, stringsAsFactors = FALSE)
+cat("taxonomy_all geladen:", nrow(taxonomy_all), "ASVs klassifiziert\n")
+
+meta_raw <- read.csv(file.path(base_path, "Data/Metadata/metadata_all.csv"),
+                      stringsAsFactors = FALSE)
+
+cat("Metadaten geladen:", nrow(meta_raw), "Proben,",
+    "Spalten:", paste(colnames(meta_raw), collapse = ", "), "\n")
+```
+
+---
+
+## 4) Proben-Namen normalisieren
+
+```{r}
+#| label: normalize-sample-names
+
+fastq_lookup <- setNames(meta_raw$sample_id, meta_raw$fastq_id)
+
+normalize_sample_names <- function(raw_names, fastq_lookup) {
+
+  cleaned <- raw_names
+
+  # Schritt A: direkter Treffer über fastq_id (deckt z.B. 3XX ab)
+  matched_a <- cleaned %in% names(fastq_lookup)
+  cleaned[matched_a] <- fastq_lookup[cleaned[matched_a]]
+
+  # Schritt B: EC24_245-Rohnamen bereinigen
+  # "ns2024-18-EC24-245-0001-FITS-A01-iA_S1_L001" -> "EC24_245_0001_FITS_A01_iA"
+  still_unmatched <- !(cleaned %in% meta_raw$sample_id)
+  candidate <- cleaned[still_unmatched]
+  candidate <- gsub("^ns2024-18-", "", candidate)
+  candidate <- gsub("-", "_", candidate)
+  candidate <- gsub("_S[0-9]+_L001$", "", candidate)
+  matched_b <- candidate %in% names(fastq_lookup)
+  candidate[matched_b] <- fastq_lookup[candidate[matched_b]]
+  cleaned[still_unmatched] <- candidate
+
+  # Schritt C: Popa-Rohnamen bereinigen
+  # "Popa-Lotharpfad_S83_L001" -> "Popa_Lotharpfad"
+  still_unmatched2 <- !(cleaned %in% meta_raw$sample_id)
+  candidate2 <- cleaned[still_unmatched2]
+  candidate2 <- gsub("^Popa-", "Popa_", candidate2)
+  candidate2 <- gsub("_S[0-9]+_L001$", "", candidate2)
+  cleaned[still_unmatched2] <- candidate2
+
+  return(cleaned)
+}
+
+n_before <- sum(rownames(seqtab_all) %in% meta_raw$sample_id)
+rownames(seqtab_all) <- normalize_sample_names(rownames(seqtab_all), fastq_lookup)
+n_after <- sum(rownames(seqtab_all) %in% meta_raw$sample_id)
+
+cat("Proben mit passendem sample_id VOR Normalisierung:", n_before, "von", nrow(seqtab_all), "\n")
+cat("Proben mit passendem sample_id NACH Normalisierung:", n_after, "von", nrow(seqtab_all), "\n")
+```
+
+---
+
+## 5) Nicht zuordenbare Proben identifizieren und entfernen (v.a. Negativkontrollen)
+
+```{r}
+#| label: remove-unmatched
+
+still_unmatched_final <- rownames(seqtab_all)[!(rownames(seqtab_all) %in% meta_raw$sample_id)]
+
+cat("=== Proben OHNE passende Metadaten nach Normalisierung ===\n")
+print(still_unmatched_final)
+
+# ── Diagnose-Hilfe: zeig zusätzlich alle Buse/EC25_600-Proben zur Kontrolle,
+# da hier die genaue Anzahl (57 statt erwarteten 51) noch geklärt werden muss
+cat("\n=== Alle Buse/EC25_600-Proben zur manuellen Kontrolle ===\n")
+buse_names <- rownames(seqtab_all)[grepl("EC25_600a_02|EC25_600", rownames(seqtab_all))]
+print(buse_names)
+cat("Anzahl:", length(buse_names), "\n")
+
+# ── Nicht zuordenbare Proben (v.a. Negativkontrollen) aus seqtab_all entfernen ──
+# Diese Proben haben keine beetle_species-Zuordnung und koennen nicht ins
+# finale phyloseq-Objekt aufgenommen werden.
+if (length(still_unmatched_final) > 0) {
+  cat("\nEntferne", length(still_unmatched_final), "nicht zuordenbare Probe(n) aus seqtab_all:\n")
+  print(still_unmatched_final)
+  seqtab_all <- seqtab_all[!(rownames(seqtab_all) %in% still_unmatched_final), ]
+}
+
+cat("\nseqtab_all nach Entfernung nicht zuordenbarer Proben:", nrow(seqtab_all), "Proben\n")
+```
+
+---
+
+## 6) Sample-Namen final abgleichen
+
+```{r}
+#| label: sample-name-check
+
+seqtab_samples <- rownames(seqtab_all)
+meta_samples   <- meta_raw$sample_id
+
+cat("Proben in seqtab_all, aber NICHT in Metadaten:\n")
+print(setdiff(seqtab_samples, meta_samples))
+
+cat("\nProben in Metadaten, aber NICHT in seqtab_all:\n")
+print(setdiff(meta_samples, seqtab_samples))
+
+stopifnot(
+  "Proben in seqtab_all ohne passende Metadaten -- bitte zuerst klären!" =
+    length(setdiff(seqtab_samples, meta_samples)) == 0
+)
+
+# Hinweis: Proben in Metadaten ohne seqtab_all-Eintrag sind unproblematisch
+# (z.B. falls Proben komplett aus DADA2 rausfielen) -- kein harter Stopp,
+# nur zur Kontrolle ausgegeben.
+cat("\nAlle seqtab_all-Proben haben jetzt passende Metadaten.\n")
+```
+
+---
+
+## 7) Taxonomie-Matrix aufbauen
+
+```{r}
+#| label: build-tax-matrix
+
+tax_mat <- taxonomy_all %>%
+  filter(sequence %in% colnames(seqtab_all)) %>%
+  column_to_rownames("sequence") %>%
+  as.matrix()
+
+tax_mat <- tax_mat[colnames(seqtab_all), ]
+
+cat("Taxonomie-Matrix:", nrow(tax_mat), "ASVs x", ncol(tax_mat), "Ränge\n")
+cat("Spalten:", paste(colnames(tax_mat), collapse = ", "), "\n")
+
+n_missing_tax <- sum(is.na(tax_mat[, "Kingdom"]) | tax_mat[, "Kingdom"] == "")
+cat("ASVs ohne jegliche Taxonomie-Info:", n_missing_tax, "\n")
+```
+
+---
+
+## 8) Sample-Daten aufbauen
+
+```{r}
+#| label: build-sample-data
+
+sample_df <- meta_raw %>%
+  column_to_rownames("sample_id")
+
+sample_df <- sample_df[rownames(seqtab_all), ]
+
+cat("Sample-Daten:", nrow(sample_df), "Proben x", ncol(sample_df), "Variablen\n")
+
+cat("\nProben pro Käferart:\n")
+print(table(sample_df$beetle_species))
+```
+
+---
+
+## 9) Phyloseq-Objekt zusammensetzen
+
+```{r}
+#| label: build-phyloseq
+
+ps <- phyloseq(
+  otu_table(seqtab_all, taxa_are_rows = FALSE),
+  sample_data(sample_df),
+  tax_table(tax_mat)
+)
+
+cat("=== phyloseq-Objekt erstellt ===\n")
+cat("Proben:", nsamples(ps), "\n")
+cat("ASVs:  ", ntaxa(ps), "\n")
+print(ps)
+```
+
+---
+
+## 10) Sanity-Checks
+
+```{r}
+#| label: sanity-checks
+
+cat("Proben mit 0 Reads gesamt:", sum(sample_sums(ps) == 0), "\n")
+cat("ASVs mit 0 Reads gesamt:  ", sum(taxa_sums(ps) == 0), "\n")
+
+head(as.data.frame(tax_table(ps)), 3)
+
+new_samples_check <- meta_raw %>%
+  filter(sequencing_run == "Buse", grepl("Melinopterus|Nimbus|Uleiota|Corymbia", beetle_species)) %>%
+  pull(sample_id)
+
+cat("\nNeue EC25_600_a_01-Proben im finalen ps-Objekt:",
+    sum(new_samples_check %in% sample_names(ps)), "von", length(new_samples_check), "\n")
+```
+
+---
+
+## 11) Speichern
+
+```{r}
+#| label: save-output
+
+output_path <- file.path(base_path, "Data/Final/Taxonomy_v3/phyloseq_all.rds")
+
+if (file.exists(output_path)) {
+  backup_ps_path <- file.path(base_path,
+                              "Data/Final/Taxonomy_v3/phyloseq_all_backup_pre_EC25_600_a01.rds")
+  if (!file.exists(backup_ps_path)) {
+    file.copy(output_path, backup_ps_path)
+    cat("Backup der alten phyloseq_all.rds gespeichert:", backup_ps_path, "\n")
+  }
+}
+
+saveRDS(ps, output_path)
+cat("Gespeichert:", output_path, "\n")
+cat("\nNächstes Skript (04_filter_taxonomy_v3.qmd) liest diese Datei direkt ein:\n")
+cat('  ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v3/phyloseq_all.rds"))\n')
+cat("\nWICHTIG: In 04_filter_taxonomy_v3.qmd beim Filtern zusätzlich zu\n")
+cat("Grammoptera_ruficornis auch Melinopterus_sphacelatus, Nimbus_contaminatus\n")
+cat("und Uleiota_planatus herausfiltern (nur Corymbia_rubra bleibt neu erhalten).\n")
+```
+
+---
+
+## 12) Session Info
+
+```{r}
+#| label: session-info
+#| code-fold: true
+
+sessionInfo()
+```

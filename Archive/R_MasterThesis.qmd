@@ -1,0 +1,494 @@
+---
+title: "FungiNP_MT"
+format: pdf
+editor: visual
+---
+
+# Packages
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(vegan)
+library(otuSummary)
+library(patchwork)
+library(RColorBrewer)
+library(ggsci)
+library(ggtree)
+library(data.tree)
+library(igraph)
+library(ggraph)
+library(data.table)
+library(edgebundleR)
+library(pairwiseAdonis)
+library(microeco)
+library(stringr)
+library(ggvenn)
+library(scales)
+library(ggpattern)
+library(indicspecies)
+library(janitor)
+library(ggvenn)
+library(UpSetR)
+library(reshape2)
+
+```
+
+# Load data
+
+```{r}
+path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/NP/New_approach/Daten"
+
+kaefer <- read.csv2(paste0(path,"/New_Species_Database.Perc.csv"), sep=";")
+
+# Re-order dataset
+kaefer <- kaefer %>% relocate(c(OTU_ID, cluster_size), .before = NCBI_Accession_ID)
+```
+
+# Assignment of database
+
+```{r}
+# Mit order und Übereinstimmung >70%
+assign_taxonomy <- function(row) {
+  dbs <- c("RDP/UNITE", "BOLD", "NCBI")  # Prioritätsreihenfolge
+  
+  for (db in dbs) {
+    if (db == "RDP/UNITE") {
+      percent_identity <- as.numeric(row$RDP_Species_Support)
+      grade <- 1 #RDP hat kein Grade, daher wird 1 angenommen
+      species <- row$RDP_Species
+      genus <- row$RDP_Genus
+      family <- row$RDP_Family
+      order <- row$RDP_Order
+      class <- row$RDP_Class
+      phylum <- row$RDP_Phylum
+      kingdom <- row$RDP_Kingdom
+      
+    } else if (db == "BOLD") {
+      percent_identity <- as.numeric(row$BOLD_HIT.ID)
+      grade <- as.numeric(row$BOLD_Grade.ID)
+      species <- row$BOLD_Species
+      genus <- row$BOLD_Genus
+      family <- row$BOLD_Family
+      order <- row$BOLD_Order
+      class <- row$BOLD_Class
+      phylum <- row$BOLD_Phylum
+      kingdom <- "Fungi"  # BOLD hat kein explizites Kingdom
+      
+    } else if (db == "NCBI") {
+      percent_identity <- as.numeric(row$NCBI_HIT.ID)
+      grade <- as.numeric(row$NCBI_Grade.ID)
+      species <- row$NCBI_Species
+      genus <- row$NCBI_Genus
+      family <- row$NCBI_Family
+      order <- row$NCBI_Order
+      class <- row$NCBI_Class
+      phylum <- row$NCBI_Phylum
+      kingdom <- "Fungi"  # NCBI hat kein explizites Kingdom
+      
+    } else {
+      next
+    }
+    
+    # --- Species-Level ---
+    if (!is.na(percent_identity) && percent_identity >= 0.975 && grade > 0.7) {
+      return(c(row$OTU_ID, percent_identity, grade, db, kingdom, phylum, class, order, family, genus, species))
+    }
+    
+    # --- Genus-Level ---
+    if (!is.na(percent_identity) && percent_identity >= 0.95 && percent_identity < 0.975 && grade > 0.7) {
+      return(c(row$OTU_ID, percent_identity, grade, db, kingdom, phylum, class, order, family, genus, ""))
+    }
+  }
+  
+  # --- Kein Treffer ---
+  return(c(row$OTU_ID, NA, NA, "No match", "", "", "", "", "", "", ""))
+}
+
+df_cons <- as.data.frame(t(apply(kaefer, 1, function(r) assign_taxonomy(as.list(r)))))
+colnames(df_cons) <- c("OTU_ID", "Percent_identity", "Grade", "db", 
+                       "Kingdom", "Phylum", "Class", "Order", "Family", "GENUS", "Species")
+
+# Keep only Kingdom=Fungi
+df_cons <- df_cons %>%
+  filter(Kingdom=="Fungi")
+```
+
+## Merge assigned taxonomy df with reads by OTU
+
+```{r}
+# Alle reads nehmen
+SingleReads <- read.csv2(
+  paste0(path,"/New_Sum_reads_per_Species.csv"), 
+  sep = ";", 
+  skip = 2
+)
+
+SingleReads$sum_reads_per_OTU <- as.numeric(SingleReads$sum_reads_per_OTU)
+
+# Calculate total reads
+total_reads <- sum(SingleReads$sum_reads_per_OTU, na.rm = TRUE) #772.095 reads in total
+```
+
+```{r}
+#Tabellen zusammenfÃ¼hren, Species+Reads
+Reads<-merge(df_cons, SingleReads, by="OTU_ID")
+
+# --- Spaltennamen einheitlich mit Unterstrichen ---
+colnames(Reads) <- colnames(Reads) %>%
+  str_replace_all("\\.", "_")
+
+Reads_desc<-Reads%>%arrange(desc(sum_reads_per_OTU))
+
+write.csv2(Reads_desc, "NEWReads_desc.csv")
+```
+
+# Fungal traits
+
+```{r}
+data(fungi_func_FungalTraits)
+fungi_func_FungalTraits
+
+# Animal biotrophic capacity template: Artrophod, animal, invertebrate, opportunistic ..
+```
+
+## Check fungal traits
+
+```{r}
+#Tabellen zusammenführen
+names(Reads)[names(Reads)=="Genus"]<-"GENUS"
+
+reads_traits<-merge(Reads, fungi_func_FungalTraits, by="GENUS")
+#Tabellen werden auf Genus-Ebene gemerged
+
+reads_traits.desc<-reads_traits%>%arrange(desc(sum_reads_per_OTU))
+write.csv(reads_traits.desc, "reads_traits.csv")
+```
+
+## General Setup
+
+```{r}
+# --- Käferarten & Familien definieren ---
+beetle_lookup <- tribble(
+  ~genus,                  ~species,                     ~family,
+  "Rutpela",               "Rutpela_maculata",           "Cerambycidae",
+  "Stenurella",            "Stenurella_melanura",        "Cerambycidae",
+  "Anthaxia",              "Anthaxia_quadripunctata",    "Buprestidae",
+  "Bolitophagus",          "Bolitophagus_reticulatus",   "Tenebrionidae",
+  "Pachytodes",            "Pachytodes_cerambyciformis", "Cerambycidae",
+  "Grammoptera",           "Grammoptera_ruficornis",     "Cerambycidae",
+  "Ips",                   "Ips_typographus",            "Curculionidae"
+)
+
+# --- Alle Spaltennamen erzeugen (Individuen je Art) ---
+beetle_cols <- grep(
+  "Bolitophagus|Pachytodes|Grammoptera|Rutpela|Anthaxia|Stenurella|Ips",
+  names(reads_traits),
+  value = TRUE
+)
+
+# ----------------------
+# Feste Reihenfolge der Käfer
+# ----------------------
+beetle_order <- c(
+  "Anthaxia_quadripunctata",# Buprestidae
+  "Grammoptera_ruficornis",  # Cerambycidae
+  "Pachytodes_cerambyciformis",
+  "Rutpela_maculata",
+  "Stenurella_melanura",
+  "Bolitophagus_reticulatus", # Tenebrionidae
+  "Ips_typographus"    # Curculionidae
+)
+
+```
+
+## Filter data for beetle-association
+
+```{r}
+unique(reads_traits$Plant_pathogenic_capacity_template)
+
+#Liste der animal biotrophic capacity traits
+unique(reads_traits$Animal_biotrophic_capacity_template)
+
+#Liste der growth forms
+unique(reads_traits$Growth_form_template)
+
+### Daten filtern – nur käferassoziierte Pilze ###
+reads_traits_animal <- reads_traits %>%
+  filter(
+    grepl("arthropod|animal|invertebrate|opportunistic", 
+          Animal_biotrophic_capacity_template, 
+          ignore.case = TRUE))
+    
+#Jetzt gibt es zwei Dataframes: reads_traits (alle fungi) und reads_traits_animal (nur tier-assoziiert)
+```
+
+# NMDS mit OTU_ID
+
+```{r}
+# 1) Nur OTU_ID + Beetle-Columns auswählen
+otu_df <- reads_traits %>%
+  select(OTU_ID, all_of(beetle_cols))
+
+# 2) OTU_ID als Spaltennamen setzen
+otu_matrix <- as.matrix(otu_df[, -1])   # alle Beetle columns
+otu_matrix <- t(otu_matrix)             # Samples als Zeilen
+
+# 3) Rownames = Beetle-Individual Namen
+rownames(otu_matrix) <- colnames(otu_df)[-1]
+
+# 4) Column names = OTU IDs
+colnames(otu_matrix) <- otu_df$OTU_ID
+
+# Kontrolle
+dim(otu_matrix)
+str(otu_matrix)
+
+otu_df_animal <- reads_traits_animal %>%
+  select(OTU_ID, all_of(beetle_cols))
+
+# 2) OTU_ID als Spaltennamen setzen
+otu_matrix_animal <- as.matrix(otu_df_animal[, -1])   # alle Beetle columns
+otu_matrix_animal <- t(otu_matrix_animal)             # Samples als Zeilen
+
+# 3) Rownames = Beetle-Individual Namen
+rownames(otu_matrix_animal) <- colnames(otu_df_animal)[-1]
+
+# 4) Column names = OTU IDs
+colnames(otu_matrix_animal) <- otu_df_animal$OTU_ID
+
+# Kontrolle
+dim(otu_matrix_animal)
+str(otu_matrix_animal)
+
+```
+
+## NMDS Plot
+
+```{r, fig.width=12, warning=FALSE, message=FALSE}
+# ----------------------
+# NMDS: All fungi
+# ----------------------
+t.otu <- as.data.frame(otu_matrix)
+
+t.otu$group <- case_when(
+  str_detect(rownames(t.otu), "Ips") ~ "Ips_typographus",
+  str_detect(rownames(t.otu), "Bolitophagus") ~ "Bolitophagus_reticulatus",
+  str_detect(rownames(t.otu), "Pachytodes") ~ "Pachytodes_cerambyciformis",
+  str_detect(rownames(t.otu), "Grammoptera") ~ "Grammoptera_ruficornis",
+  str_detect(rownames(t.otu), "Rutpela") ~ "Rutpela_maculata",
+  str_detect(rownames(t.otu), "Anthaxia") ~ "Anthaxia_quadripunctata",
+  str_detect(rownames(t.otu), "Stenurella") ~ "Stenurella_melanura",
+  TRUE ~ "unbekannt"
+)
+
+t.otu$family <- case_when(
+  str_detect(t.otu$group, "Ips") ~ "Curculionidae",
+  str_detect(t.otu$group, "Bolitophagus") ~ "Tenebrionidae",
+  str_detect(t.otu$group, "Pachytodes|Grammoptera|Rutpela|Stenurella") ~ "Cerambycidae",
+  str_detect(t.otu$group, "Anthaxia") ~ "Buprestidae",
+  TRUE ~ "unbekannt"
+)
+
+# NMDS
+set.seed(123)
+ord <- metaMDS(t.otu[, -c(ncol(t.otu), ncol(t.otu)-1)], distance = "bray")
+
+nmds_scores <- data.frame(
+  NMDS1 = ord$points[,1],
+  NMDS2 = ord$points[,2],
+  group = t.otu$group,
+  family=t.otu$family
+)
+
+# ----------------------
+# NMDS: Beetle-associated
+# ----------------------
+t.otu_animal <- as.data.frame(otu_matrix_animal)
+t.otu_animal$group <- case_when(
+  str_detect(rownames(t.otu_animal), "Ips") ~ "Ips_typographus",
+  str_detect(rownames(t.otu_animal), "Bolitophagus") ~ "Bolitophagus_reticulatus",
+  str_detect(rownames(t.otu_animal), "Pachytodes") ~ "Pachytodes_cerambyciformis",
+  str_detect(rownames(t.otu_animal), "Grammoptera") ~ "Grammoptera_ruficornis",
+  str_detect(rownames(t.otu_animal), "Rutpela") ~ "Rutpela_maculata",
+  str_detect(rownames(t.otu_animal), "Anthaxia") ~ "Anthaxia_quadripunctata",
+  str_detect(rownames(t.otu_animal), "Stenurella") ~ "Stenurella_melanura",
+  TRUE ~ "unbekannt"
+)
+
+t.otu_animal$family <- case_when(
+  str_detect(t.otu_animal$group, "Ips") ~ "Curculionidae",
+  str_detect(t.otu_animal$group, "Bolitophagus") ~ "Tenebrionidae",
+  str_detect(t.otu_animal$group, "Pachytodes|Grammoptera|Rutpela|Stenurella") ~ "Cerambycidae",
+  str_detect(t.otu_animal$group, "Anthaxia") ~ "Buprestidae",
+  TRUE ~ "unbekannt"
+)
+set.seed(123)
+ord.animal <- metaMDS(t.otu_animal[, -c(ncol(t.otu_animal), ncol(t.otu_animal)-1)], distance = "bray")
+
+nmds_scores.animal <- data.frame(
+  NMDS1 = ord.animal$points[,1],
+  NMDS2 = ord.animal$points[,2],
+  group = t.otu_animal$group,
+  family= t.otu_animal$family
+)
+
+# ----------------------
+# Einheitliche Level-Reihenfolge basierend auf t.otu
+# ----------------------
+all_groups <- unique(t.otu$group)  # Reihenfolge wie in der OTU-Matrix
+nmds_scores$group <- factor(nmds_scores$group, levels = all_groups)
+nmds_scores.animal$group <- factor(nmds_scores.animal$group, levels = all_groups)
+
+# ----------------------
+# Gemeinsame Farbpalette
+# ----------------------
+cols <- pal_d3("category20")(length(all_groups))
+names(cols) <- all_groups
+
+# ----------------------
+# Plots
+# ----------------------
+plot_all <- ggplot(nmds_scores, aes(NMDS1, NMDS2, color = group, shape = family)) +
+  geom_point(size = 3) +
+  stat_ellipse(level = 0.95) +
+  scale_color_manual(values = cols, drop = FALSE) +
+  theme_classic(base_size = 15) +
+  labs(title = "NMDS (All fungi)",
+      color = "Beetle Species",
+      shape = "Beetle Family")+
+  guides(
+    color = guide_legend(nrow = 2, byrow = TRUE),
+    shape = guide_legend(nrow = 1, byrow = TRUE))   # <-- eine Reihe für die Shapes
+
+plot_animal <- ggplot(nmds_scores.animal, aes(NMDS1, NMDS2, color = group, shape=family)) +
+  geom_point(size = 3) +
+  stat_ellipse(level = 0.95) +
+  scale_color_manual(values = cols, drop = FALSE) +
+  theme_classic(base_size = 15) +
+  labs(title = "NMDS (animal-related)",
+      color = "Beetle Species",
+      shape = "Beetle Family")+
+  guides(
+    color = guide_legend(nrow = 2, byrow = TRUE),
+    shape = guide_legend(nrow = 1, byrow = TRUE))
+
+# ----------------------
+# Kombinierter Plot mit gemeinsamer Legende
+# ----------------------
+combined_plot_NMDS <- (plot_all + plot_animal) +
+  plot_layout(guides = "collect", widths = c(1, 1)) +
+  plot_annotation(tag_levels = 'A') &
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.justification = "left",
+    legend.box.just = "left",        # sorgt dafür, dass ALLE Guides linksbündig angeordnet werden
+    legend.text.align = 0,
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+
+combined_plot_NMDS
+
+ggsave("NMDS.png", plot = combined_plot_NMDS,
+       width = 15, height = 6, dpi = 300, bg="white")
+```
+
+# PERMANOVA
+
+```{r}
+# Distanzmatrix aus den OTU-Daten berechnen
+dist_matrix <- vegdist(t.otu[, -c(ncol(t.otu), ncol(t.otu)-1)], method = "bray")  # Bray-Curtis, Spalten Group und Family werden entfernt
+
+# PERMANOVA durchführen
+adonis_res <- adonis2(dist_matrix ~ group, data = t.otu)
+adonis_res
+100/22.381*10.072
+# 0.001 *** → sehr signifikant, Unterschiede zwischen Gruppen sind statistisch signifikant
+# 45% der Variation wird durch die Gruppenzugehörigkeit erklärt
+```
+
+```{r}
+# Distanzmatrix aus den OTU-Daten berechnen
+dist_matrix_animal <- vegdist(t.otu_animal[, -c(ncol(t.otu_animal), ncol(t.otu_animal)-1)], method = "bray")  # Bray-Curtis, Spalten Group und Family werden entfernt
+
+# PERMANOVA durchführen
+adonis_res_animal <- adonis2(dist_matrix_animal ~ group, data = t.otu_animal)
+adonis_res_animal
+100/21.94*10.199
+# 0.001 *** → sehr signifikant, Unterschiede zwischen Gruppen sind statistisch signifikant
+# 46% der Variation wird durch die Gruppenzugehörigkeit erklärt
+```
+
+# Multifactorial PERMANOVA
+
+## Metadata beetles
+
+```{r}
+beetle_lookup <- tribble(
+  ~genus,        ~species,                     ~family,        ~diet_type,          ~preferred_host,        ~adult_behavior,        ~habitat_type,
+  "Rutpela",     "Rutpela_maculata",           "Cerambycidae", "wood_generalist",   "deciduous+conifer",   "stays_on_host",        "mixed_forest",
+  "Stenurella",  "Stenurella_melanura",        "Cerambycidae", "wood_generalist",   "deciduous+conifer",   "visits_flowers",       "mixed_forest",
+  "Anthaxia",    "Anthaxia_quadripunctata",    "Buprestidae",  "wood_specialist",   "conifer",             "stays_on_host",        "conifer_forest",
+  "Bolitophagus","Bolitophagus_reticulatus",   "Tenebrionidae","fungus_specialist", "fungi",               "stays_on_host",        "fruiting_bodies_fungi",
+  "Pachytodes",  "Pachytodes_cerambyciformis","Cerambycidae", "wood_generalist",   "deciduous+conifer",   "stays_on_host",        "mixed_forest",
+  "Grammoptera", "Grammoptera_ruficornis",     "Cerambycidae", "wood_specialist",   "specific_deciduous",  "stays_on_host",        "deciduous_forest",
+  "Ips",         "Ips_typographus",            "Curculionidae","bark_beetle",       "conifer",             "phloem_feeder",        "spruce_forest"
+)
+
+
+
+```
+
+```{r}
+sample_metadata <- data.frame(
+  sample = rownames(otu_matrix)
+) %>%
+  # Extrahiere den Genus aus dem Sample-Namen
+  mutate(genus = str_extract(sample, "Rutpela|Stenurella|Anthaxia|Bolitophagus|Pachytodes|Grammoptera|Ips")) %>%
+  # Join mit beetle_lookup
+  left_join(beetle_lookup %>%
+              select(species, family, genus, diet_type, preferred_host, adult_behavior, habitat_type),
+            by = "genus")
+
+# 2) Distanzmatrix berechnen (Bray-Curtis)
+# ----------------------
+dist_matrix <- vegdist(otu_matrix, method = "bray")
+
+# ----------------------
+# 3) Multifaktorielle PERMANOVA
+# ----------------------
+family_diet <- adonis2(dist_matrix ~ family  + diet_type,
+        data = sample_metadata, permutations = 999)
+
+
+interaction <- adonis2(dist_matrix ~ family + diet_type, family*diet_type,
+        data = sample_metadata,
+        permutations = 999)
+
+#Datensatz zwar klein, aber trotzdem signifikanter Effekt von diet_type.. allerdings family+diet type nicht höher als Faktor "species" (zusammen ca. 41%)
+
+preferred_host <- adonis2(dist_matrix ~  preferred_host + family,
+        data = sample_metadata,
+        permutations = 999)
+
+preferred_host
+#Habitat_type erklärt viel Varianz, allerdings haben im DF die Arten auch alle spezielle Habitate, deswegen Effekt fast so groß wie Spezies-Effekt --> Mehr Daten nötig
+```
+
+# Correlation between preferred_host and family
+
+```{r}
+table(sample_metadata$family, sample_metadata$preferred_host)
+chisq.test(sample_metadata$family, sample_metadata$preferred_host)
+
+sample_metadata[,-c(1,2)]
+```
+
+```{r}
+library(xtable)
+
+tab <- xtable(sample_metadata[,-c(1,2)])
+print(tab, include.rownames = FALSE)
+
+```
