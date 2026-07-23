@@ -21,6 +21,7 @@ library(htmlwidgets)
 
 
 base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
+source("helpers.R")
 
 # ── phyloseq-Objekt laden (identisch zu 08_lifestyle_network_v3.qmd) ────────
 ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v3/ps_filtered.rds"))
@@ -87,22 +88,15 @@ tax_traits_unique_ps <- tax_traits %>%
   distinct(sequence, .keep_all = TRUE)
 
 # ── Reads im Long-Format, mit Taxonomie + Metadaten gejoint ─────────────────
-asv_family_long <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(reads > 0) %>%
-  left_join(meta_family, by = "sample") %>%
-  left_join(tax_df, by = "sequence")
+# (Basistabelle für dieses gesamte Skript -- alle weiteren Abschnitte filtern
+# nur noch aus asv_family_long / lifestyle_long, statt otu_ps erneut zu
+# transformieren.)
+asv_family_long <- reads_long(otu_ps, meta = meta_family, tax = tax_df)
 
 # ── Lifestyle-Long: direkt aus tax_traits statt CSV ─────────────────────────
-lifestyle_long <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(reads > 0) %>%
-  left_join(tax_traits_unique_ps %>% select(sequence, lifestyle_group), by = "sequence") %>%
-  left_join(meta_family, by = "sample")
+lifestyle_long <- reads_long(otu_ps,
+                             meta = meta_family,
+                             tax  = tax_traits_unique_ps %>% select(sequence, lifestyle_group))
 
 # ── Farbpalette & Reihenfolge ────────────────────────────────────────────────
 family_colors <- c(
@@ -296,13 +290,9 @@ bolitophagus_samples <- meta_family %>%
 n_bolitophagus_samples <- length(bolitophagus_samples)
 cat("Anzahl Bolitophagus-Proben insgesamt:", n_bolitophagus_samples, "\n\n")
 
-komagataella_suhomyces_prevalence <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(sample %in% bolitophagus_samples, reads > 0) %>%
-  left_join(tax_df %>% select(sequence, Genus_clean), by = "sequence") %>%
-  filter(Genus_clean %in% c("Komagataella", "Suhomyces")) %>%
+komagataella_suhomyces_prevalence <- asv_family_long %>%
+  filter(beetle_species == "Bolitophagus_reticulatus",
+         Genus_clean %in% c("Komagataella", "Suhomyces")) %>%
   distinct(sample, Genus_clean) %>%
   count(Genus_clean, name = "n_samples_present") %>%
   mutate(pct_samples = round(n_samples_present / n_bolitophagus_samples * 100, 1))
@@ -342,13 +332,7 @@ species_level_df <- asv_family_long %>%
 cat("=== Hyphopichia/Scheffersomyces auf Art-Ebene ===\n")
 print(species_level_df, n = Inf)
 
-target_reads_df <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(reads > 0) %>%
-  left_join(meta_family, by = "sample") %>%
-  left_join(tax_df %>% select(sequence, Genus_clean), by = "sequence") %>%
+target_reads_df <- asv_family_long %>%
   mutate(is_target = Genus_clean %in% target_genera) %>%
   group_by(beetle_species, family) %>%
   mutate(total = sum(reads)) %>%
@@ -361,13 +345,7 @@ target_reads_df <- otu_ps %>%
 cat("\n=== Relative Read-Abundanz Hyphopichia+Scheffersomyces pro Art ===\n")
 print(target_reads_df, n = Inf)
 
-target_species_df <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(reads > 0) %>%
-  left_join(meta_family, by = "sample") %>%
-  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+target_species_df <- asv_family_long %>%
   filter(Genus_clean == "Hyphopichia" & Species_clean == "rhagii" |
          Genus_clean == "Scheffersomyces" & Species_clean == "ergatensis") %>%
   mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
@@ -378,13 +356,7 @@ target_species_df <- otu_ps %>%
 cat("=== Reads für Hyphopichia rhagii & Scheffersomyces ergatensis pro Käferart ===\n")
 print(target_species_df, n = Inf)
 
-target_species_rel <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(reads > 0) %>%
-  left_join(meta_family, by = "sample") %>%
-  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+target_species_rel <- asv_family_long %>%
   mutate(is_target = (Genus_clean == "Hyphopichia" & Species_clean == "rhagii") |
                      (Genus_clean == "Scheffersomyces" & Species_clean == "ergatensis"),
          target_label = case_when(
@@ -403,23 +375,12 @@ target_species_rel <- otu_ps %>%
 cat("\n=== Relativer Anteil (%) am Gesamt-Mykobiom pro Käferart ===\n")
 print(target_species_rel, n = Inf)
 
-total_reads_per_species <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(reads > 0) %>%
-  left_join(meta_family, by = "sample") %>%
+total_reads_per_species <- asv_family_long %>%
   mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
   group_by(beetle_species, family) %>%
   summarise(total_reads = sum(reads), .groups = "drop")
 
-target_absolute <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(reads > 0) %>%
-  left_join(meta_family, by = "sample") %>%
-  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+target_absolute <- asv_family_long %>%
   filter(Genus_clean == "Hyphopichia" & Species_clean == "rhagii" |
          Genus_clean == "Scheffersomyces" & Species_clean == "ergatensis") %>%
   mutate(beetle_species = gsub("_", " ", beetle_species),
@@ -450,13 +411,7 @@ prosthemium_species_df <- asv_family_long %>%
 cat("=== Prosthemium-Arten pro Käferart ===\n")
 print(prosthemium_species_df, n = Inf)
 
-prosthemium_reads_df <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(reads > 0) %>%
-  left_join(meta_family, by = "sample") %>%
-  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
+prosthemium_reads_df <- asv_family_long %>%
   filter(Genus_clean == "Prosthemium") %>%
   mutate(beetle_species = gsub("_", " ", beetle_species)) %>%
   group_by(Species_clean, beetle_species, family) %>%
@@ -478,13 +433,9 @@ chrysobothris_samples <- meta_family %>%
 n_chrysobothris_samples <- length(chrysobothris_samples)
 cat("Anzahl Chrysobothris-affinis-Proben insgesamt:", n_chrysobothris_samples, "\n\n")
 
-prosthemium_prevalence <- otu_ps %>%
-  rownames_to_column("sequence") %>%
-  pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  filter(sample %in% chrysobothris_samples, reads > 0) %>%
-  left_join(tax_df %>% select(sequence, Genus_clean, Species_clean), by = "sequence") %>%
-  filter(Genus_clean == "Prosthemium" & Species_clean == "intermedium") %>%
+prosthemium_prevalence <- asv_family_long %>%
+  filter(beetle_species == "Chrysobothris_affinis",
+         Genus_clean == "Prosthemium", Species_clean == "intermedium") %>%
   distinct(sample) %>%
   nrow()
 
