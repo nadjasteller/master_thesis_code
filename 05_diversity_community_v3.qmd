@@ -762,7 +762,8 @@ p_bars_pa <- ggplot(bar_df_pa, aes(x = model, y = r2, fill = model)) +
   theme(
     legend.position = "none",
     axis.text       = element_text(size = 24),
-    axis.title.y    = element_text(size = 24, face = "bold")
+    axis.title.y    = element_text(size = 24, face = "bold"),
+    plot.tag        = element_text(size = 30, face = "bold")
   )
 
 fmt_pa <- function(x) ifelse(x < 0, "neg.", paste0(x, "%"))
@@ -787,7 +788,10 @@ p_venn_pa <- ggplot() +
            size = 9, color = "grey40") +
   coord_fixed(xlim = c(-1, 1), ylim = c(-0.9, 0.9)) +
   theme_void() +
-  theme(legend.position = "none")
+  theme(
+    legend.position = "none",
+    plot.tag        = element_text(size = 30, face = "bold")
+  )
 
 combined_vp_pa <- p_bars_pa / p_venn_pa +
   plot_layout(heights = c(1, 1.8)) +
