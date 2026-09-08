@@ -33,9 +33,7 @@ if (!taxa_are_rows(ps)) {
 
 meta_df <- data.frame(sample_data(ps)) %>%
   rownames_to_column("sample") %>%
-  mutate(sample = gsub("^X", "", sample)) %>%
-  rename(family = family.x) %>%
-  select(-family.y)
+  mutate(sample = gsub("^X", "", sample))
 
 meta_family <- meta_df %>% select(sample, family, beetle_species)
 
