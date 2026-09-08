@@ -306,10 +306,10 @@ asv_count_df <- asv_seq_df %>%
 
 p_asv_count <- ggplot(asv_count_df, aes(x = beetle_species, y = n_asv, fill = family)) +
   geom_bar(stat = "identity", color = "white", width = 0.7) +
-  geom_text(aes(label = n_asv), vjust = -0.4, size = 3.5) +
+  geom_text(aes(label = n_asv), vjust = -0.4, size = 6) +
   scale_fill_manual(values = family_colors) +
   labs(x = NULL, y = "Number of unique ASVs", fill = "Family") +
-  theme_minimal(base_size = 14) +
+  theme_minimal(base_size = 16) +
   theme(
     axis.text.x     = element_text(angle = 45, hjust = 1, face = "italic"),
     legend.position = "bottom",
@@ -334,14 +334,14 @@ p_asv_count_run <- ggplot(asv_count_run_df, aes(x = beetle_species, y = n_asv, f
   geom_bar(stat = "identity", color = "white", width = 0.7) +
   geom_text(aes(label = ifelse(n_asv > 100, n_asv, "")),
             position = position_stack(vjust = 0.5),
-            size = 3, color = "white", fontface = "bold") +
+            size = 6, color = "white", fontface = "bold") +
   scale_fill_manual(values = run_colors, name = "Sequencing run") +
   facet_grid(. ~ family, scales = "free_x", space = "free") +
   labs(x = NULL, y = "Number of unique ASVs") +
-  theme_minimal(base_size = 14) +
+  theme_minimal(base_size = 16) +
   theme(
     axis.text.x     = element_text(angle = 45, hjust = 1, face = "italic"),
-    strip.text.x    = element_text(size = 12, face = "bold"),
+    strip.text.x    = element_text(size = 16, face = "bold"),
     legend.position = "bottom",
     legend.justification = "left")
 
@@ -360,8 +360,8 @@ ggsave(file.path(base_path, "Results/Figures/asv_count_per_species_by_run.pdf"),
 ```{r}
 #| label: plot-proportion-aa
 
-group_colors <- c("animal-associated" = "#4A4A4A",
-                  "opportunistic"     = "#B8B8B0")
+group_colors <- c("animal-associated" = "#C9A227",
+                  "opportunistic"     = "#D3D3D3")
 
 make_group_plot <- function(df, title) {
   df <- df %>%
@@ -374,17 +374,17 @@ make_group_plot <- function(df, title) {
     geom_bar(stat = "identity", color = "white", width = 0.7) +
     geom_text(aes(label = ifelse(rel > 0.08, scales::percent(rel, accuracy = 1), "")),
           position = position_stack(vjust = 0.5),
-          size = 3.5, color = "white", fontface = "bold") +
+          size = 3.5, color = "black", fontface = "bold") +
     scale_fill_manual(values = group_colors,
                       labels = c("animal-associated" = "Animal-associated ASVs",
                                  "opportunistic"     = "Passively associated ASVs")) +
     scale_y_continuous(labels = scales::percent) +
     facet_grid(. ~ family, scales = "free_x", space = "free") +
     labs(x = NULL, y = "Relative proportion", fill = "", title = title) +
-    theme_minimal(base_size = 14) +
+    theme_minimal(base_size = 16) +
     theme(
       axis.text.x          = element_text(angle = 45, hjust = 1, face = "italic"),
-      strip.text.x         = element_text(size = 14, face = "bold"),
+      strip.text.x         = element_text(size = 16, face = "bold"),
       legend.position      = "bottom",
       legend.justification = "left")
 }
@@ -461,17 +461,17 @@ make_alluvial_plot <- function(data, family_name, title = family_name, show_lege
     scale_y_continuous(labels = scales::percent) +
     scale_x_discrete(labels = c("All fungi" = "AF", "Animal-associated fungi" = "AA")) +
     facet_wrap(~ beetle_species, nrow = 1,
-               labeller = labeller(beetle_species = label_wrap_gen(12))) +
+               labeller = labeller(beetle_species = label_wrap_gen(9))) +
     labs(x = NULL, y = title, fill = "Fungal lifestyle") +
-    theme_minimal(base_size = 11) +
+    theme_minimal(base_size = 18) +
     theme(
-      strip.text      = element_text(face = "italic", size = 14),
-      axis.text.x     = element_text(size = 14),
+      strip.text      = element_text(face = "italic", size = 24),
+      axis.text.x     = element_text(size = 18),
       legend.position = if (show_legend) "bottom" else "none",
-      legend.text     = element_text(size = 14),
-      legend.title    = element_text(size = 14, face = "bold"),
-      legend.key.size = unit(1, "cm"),
-      axis.title.y    = element_text(size = 14, face = "bold")
+      legend.text     = element_text(size = 22),
+      legend.title    = element_text(size = 22, face = "bold"),
+      legend.key.size = unit(1.4, "cm"),
+      axis.title.y    = element_text(size = 24, face = "bold")
     )
 }
 
@@ -489,7 +489,7 @@ combined <- plot_bup / plot_cer / plot_exo +
 combined
 
 ggsave(file.path(base_path, "Results/Figures/lifestyle_alluvial_AF_vs_AA_ASV.pdf"),
-       plot = combined, width = 14, height = 12, bg = "white")
+       plot = combined, width = 24, height = 12, bg = "white")
 ```
 Lepturinae in eine Zeile machen!
 
@@ -538,17 +538,17 @@ make_alluvial_plot_zoom <- function(data, family_name, title = family_name,
     scale_x_discrete(labels = c("All fungi"               = "AF",
                                  "Animal-associated fungi" = "AA")) +
     facet_wrap(~ beetle_species, nrow = 1,
-               labeller = labeller(beetle_species = label_wrap_gen(12))) +
+               labeller = labeller(beetle_species = label_wrap_gen(9))) +
     labs(x = NULL, y = title, fill = "Fungal lifestyle") +
-    theme_minimal(base_size = 11) +
+    theme_minimal(base_size = 18) +
     theme(
-      strip.text      = element_text(face = "italic", size = 14),
-      axis.text.x     = element_text(size = 14),
+      strip.text      = element_text(face = "italic", size = 24),
+      axis.text.x     = element_text(size = 18),
       legend.position = if (show_legend) "bottom" else "none",
-      legend.text     = element_text(size = 14),
-      legend.title    = element_text(size = 14, face = "bold"),
-      legend.key.size = unit(1, "cm"),
-      axis.title.y    = element_text(size = 14, face = "bold")
+      legend.text     = element_text(size = 22),
+      legend.title    = element_text(size = 22, face = "bold"),
+      legend.key.size = unit(1.4, "cm"),
+      axis.title.y    = element_text(size = 24, face = "bold")
     )
 }
 
@@ -568,7 +568,7 @@ combined_zoom <- plot_bup_zoom / plot_cer_zoom / plot_exo_zoom +
 combined_zoom
 
 ggsave(file.path(base_path, "Results/Figures/lifestyle_alluvial_AF_vs_AA_zoom.pdf"),
-       plot = combined_zoom, width = 14, height = 12, bg = "white")
+       plot = combined_zoom, width = 24, height = 12, bg = "white")
 ```
 
 # 10) RESULTS: Alluvial

@@ -32,7 +32,7 @@ eingetragen) -- daher hier **kein** erneuter Join nötig.
 
 ---
 
-## 1) Pakete laden
+## Pakete laden
 
 ```{r}
 #| label: packages
@@ -59,27 +59,27 @@ library(colorspace)
 
 ---
 
-## 2) Daten laden
+## Daten laden
 
 ```{r}
 #| label: load-data
 
 base_path <- "C:/Users/user/Documents/Master_EnvironmentalSciences/Master_Thesis"
 
-# ── Gefiltertes Phyloseq-Objekt (ASV-Ebene, family bereits enthalten) ────────
+# Gefiltertes Phyloseq-Objekt (ASV-Ebene, family bereits enthalten)
 ps <- readRDS(file.path(base_path, "Data/Final/Taxonomy_v3/ps_filtered.rds"))
 
-# ── ASV-Matrix direkt aus ps (Samples x ASVs, KEIN OTU-Mapping) ───────────────
+# ASV-Matrix direkt aus ps (Samples x ASVs, KEIN OTU-Mapping)
 asv_mat <- as(otu_table(ps), "matrix")
 if (taxa_are_rows(ps)) asv_mat <- t(asv_mat)
 rownames(asv_mat) <- gsub("^X", "", rownames(asv_mat))
 
-# ── Beetle traits ──────────────────────────────────────────────────────────────
+# Beetle traits
 beetle_traits <- read.csv(
   file.path(base_path, "Data/Metadata/beetle_traits.csv")
 )
 
-# ── Metadaten (family ist schon dabei, kein Join nötig) ───────────────────────
+# Metadaten (family ist schon dabei, kein Join nötig)
 meta_df <- data.frame(sample_data(ps)) %>%
   rownames_to_column("sample") %>%
   mutate(sample = gsub("^X", "", sample))
@@ -91,7 +91,7 @@ cat("family-NAs:", sum(is.na(meta_df$family)), "\n")
 
 ---
 
-## 3) Setup: Farben & Reihenfolge
+## Setup: Farben & Reihenfolge
 
 ```{r}
 #| label: setup
@@ -101,6 +101,17 @@ species_order <- c(
   "Chrysobothris affinis", "Buprestis haemorrhoidalis",
   "Rhagium bifasciatum", "Rhagium inquisitor", "Rhagium mordax",
   "Pachytodes cerambyciformis", "Rutpela maculata", "Stenurella melanura", "Corymbia rubra",
+  "Bolitophagus reticulatus", "Ips typographus", "Pterostichus aethiops"
+)
+
+# Alphabetische Sortierung pro Familie, mit Ausnahme Cerambycidae: dort
+# erst die Lepturini (Corymbia, Pachytodes, Rutpela, Stenurella; alphabetisch),
+# dann die Rhagium-Arten (alphabetisch) -- fuer die Alpha-Diversitaets-Abbildung.
+species_order_alpha <- c(
+  "Anthaxia fulgurans", "Anthaxia quadripunctata",
+  "Buprestis haemorrhoidalis", "Chrysobothris affinis",
+  "Corymbia rubra", "Pachytodes cerambyciformis", "Rutpela maculata", "Stenurella melanura",
+  "Rhagium bifasciatum", "Rhagium inquisitor", "Rhagium mordax",
   "Bolitophagus reticulatus", "Ips typographus", "Pterostichus aethiops"
 )
 
@@ -114,7 +125,7 @@ family_colors <- c(
   "Curculionidae" = "#3C3489",
   "Carabidae"     = "#3C3C3C")
 
-# ── Zuordnung Art -> Familie ───────────────────────────────────────────────
+# Zuordnung Art -> Familie
 species_to_family <- c(
   "Anthaxia fulgurans"          = "Buprestidae",
   "Anthaxia quadripunctata"     = "Buprestidae",
@@ -131,7 +142,7 @@ species_to_family <- c(
   "Ips typographus"             = "Curculionidae",
   "Pterostichus aethiops"       = "Carabidae")
 
-# ── cols: jede Art bekommt exakt die Farbe ihrer Familie (keine Abstufung) ────
+# cols: jede Art bekommt exakt die Farbe ihrer Familie (keine Abstufung)
 cols <- setNames(
   family_colors[species_to_family[legend_order]],
   legend_order
@@ -140,7 +151,7 @@ cols <- setNames(
 scales::show_col(cols, labels = TRUE)
 print(cols)
 
-# ── Abkürzungs-Version für Plots, die mit BU/CE/TE/CU/CA arbeiten ─────────────
+# Abkürzungs-Version für Plots, die mit BU/CE/TE/CU/CA arbeiten
 family_abbr <- c(
   "Buprestidae"   = "BU",
   "Cerambycidae"  = "CE",
@@ -153,7 +164,7 @@ family_colors_abbr <- setNames(family_colors, family_abbr[names(family_colors)])
 
 ---
 
-## 4) Alpha-Diversität
+## Alpha-Diversität
 ```{r}
 #| label: alpha-diversity
 
@@ -177,7 +188,7 @@ alpha_summary <- alpha_div %>%
     .groups = "drop"
   ) %>%
   mutate(
-    beetle_species = factor(gsub("_", " ", beetle_species), levels = species_order),
+    beetle_species = factor(gsub("_", " ", beetle_species), levels = species_order_alpha),
     family = factor(family_abbr[as.character(family)],
                     levels = c("BU", "CE", "TE", "CU", "CA", "SI")),
     Shannon_se  = ifelse(n_samples > 1, Shannon_se,  NA),
@@ -187,14 +198,14 @@ alpha_summary <- alpha_div %>%
 cat("=== Alpha Diversity Summary ===\n")
 print(alpha_summary, n = Inf)
 
-# ── Kruskal-Wallis: Unterschiede zwischen Käferarten? ─────────────────────────
+# Kruskal-Wallis: Unterschiede zwischen Käferarten?
 cat("\nKruskal-Wallis Shannon:\n")
 print(kruskal.test(Shannon ~ beetle_species, data = alpha_div))
 
 cat("\nKruskal-Wallis Evenness:\n")
 print(kruskal.test(Evenness ~ beetle_species, data = alpha_div))
 
-# ── Plot ───────────────────────────────────────────────────────────────────────
+# Plot
 scale_factor <- max(alpha_summary$Shannon_mean) / max(alpha_summary$Evenness_mean)
 
 ggplot(alpha_summary, aes(x = beetle_species)) +
@@ -210,10 +221,10 @@ ggplot(alpha_summary, aes(x = beetle_species)) +
                      sec.axis = sec_axis(~ . / scale_factor, name = "Evenness")) +
   facet_grid(. ~ family, scales = "free_x", space = "free") +
   labs(x = NULL) +
-  theme_minimal(base_size = 14) +
+  theme_minimal(base_size = 16) +
   theme(
     axis.text.x        = element_text(angle = 45, hjust = 1, face = "italic"),
-    strip.text.x       = element_text(size = 14, face = "bold"),
+    strip.text.x       = element_text(size = 16, face = "bold"),
     axis.title.y.right = element_text(color = "black"),
     legend.position    = "none",
     plot.margin        = margin(t = 5, r = 10, b = 5, l = 20, unit = "mm")
@@ -225,57 +236,22 @@ ggsave(file.path(base_path, "Results/Figures/Alpha_diversity_ASV.pdf"),
 
 ---
 
-## 5) Beta-Diversität: NMDS
+## Beta-Diversität: NMDS (Jaccard / Presence-Absence)
+
+::: callout-note
+Abundanzbasierte Bray-Curtis-NMDS wurde nach Archiv/06_AlphaBetaDiversity.qmd
+verschoben (Konsistenz mit Jaccard-PERMANOVA/Betadisper/Varpart weiter unten;
+Begründung: technische Variation in Sequenziertiefe zwischen den vier
+Sequenzierläufen, vgl. Discussion "Methodological Considerations").
+:::
 
 ```{r}
 #| label: nmds
 
-set.seed(123)
-ord_asv <- metaMDS(asv_mat, distance = "bray", k = 2, trymax = 100)
-cat("Stress:", round(ord_asv$stress, 4), "\n")
-
-nmds_df <- data.frame(
-  NMDS1  = ord_asv$points[, 1],
-  NMDS2  = ord_asv$points[, 2],
-  sample = rownames(ord_asv$points)
-) %>%
-  left_join(meta_df %>% select(sample, beetle_species, family), by = "sample") %>%
-  mutate(beetle_species = gsub("_", " ", beetle_species),
-         beetle_species = factor(beetle_species, levels = legend_order))
-
-ggplot(nmds_df, aes(NMDS1, NMDS2, color = beetle_species, shape = family)) +
-  geom_point(size = 3.1, alpha = 0.9) +
-  stat_ellipse(aes(group = beetle_species),
-               level = 0.95, linewidth = 0.4, linetype = "dashed") +
-  scale_color_manual(values = cols, breaks = legend_order) +
-  scale_shape_manual(values = c(16, 17, 15, 18, 8, 1)) +
-  annotate("text", x = Inf, y = -Inf,
-           label = paste0("Stress = ", round(ord_asv$stress, 4)),
-           hjust = 1.1, vjust = -0.5, size = 5) +
-  labs(title = "", color = "", shape = "") +
-  theme_minimal(base_size = 14) +
-  theme(
-    legend.position = "bottom",
-    legend.box      = "vertical",
-    legend.box.just = "left",
-    legend.text     = element_text(size = 12, face = "italic")
-  ) +
-  guides(color = guide_legend(nrow = 4, byrow = TRUE, override.aes = list(size = 3)),
-         shape = guide_legend(nrow = 1))
-
-ggsave(file.path(base_path, "Results/Figures/NMDS_ASV.pdf"),
-       width = 12, height = 10, bg = "white")
-```
-
-
-# 5) NMDS PA Beschriftung im Text OHNE Uleiota
-
-```{r}
-
-# ── ASV-Matrix in Presence/Absence umwandeln ──────────────────────────────
+# ASV-Matrix in Presence/Absence umwandeln
 asv_pa <- (asv_mat > 0) * 1
 
-# ── NMDS mit Jaccard-Distanz ──────────────────────────────────────────────
+# NMDS mit Jaccard-Distanz
 set.seed(42)
 nmds_pa <- metaMDS(
   asv_pa,
@@ -291,14 +267,14 @@ cat("Stress:", nmds_pa$stress, "\n")
 meta_family <- meta_df %>%
   select(sample, family, beetle_species)
 
-# ── Koordinaten für ggplot extrahieren ────────────────────────────────────
+# Koordinaten für ggplot extrahieren
 nmds_pa_df <- as.data.frame(scores(nmds_pa, display = "sites")) %>%
   rownames_to_column("sample") %>%
   mutate(sample = gsub("^X", "", sample)) %>%
   left_join(meta_family, by = "sample") %>%
   mutate(beetle_species = gsub("_", " ", beetle_species))
 
-# ── Zentroide berechnen ───────────────────────────────────────────────────
+# Zentroide berechnen
 centroids_nmds_pa <- nmds_pa_df %>%
   group_by(beetle_species, family) %>%
   summarise(
@@ -311,7 +287,7 @@ centroids_nmds_pa <- nmds_pa_df %>%
     nudge_y = ifelse(beetle_species == "Chrysobothris affinis", 0.2, 0)
   )
 
-# ── Plot ──────────────────────────────────────────────────────────────────
+# Plot
 p_nmds_pa <- ggplot(
   nmds_pa_df,
   aes(NMDS1, NMDS2, color = beetle_species, shape = family)
@@ -328,7 +304,7 @@ p_nmds_pa <- ggplot(
     aes(label = beetle_species),
     nudge_x = centroids_nmds_pa$nudge_x,
     nudge_y = centroids_nmds_pa$nudge_y,
-    size = 5,
+    size = 6,
     fontface = "italic",
     show.legend = FALSE,
     max.overlaps = Inf,
@@ -354,7 +330,7 @@ p_nmds_pa <- ggplot(
     label = paste0("Stress = ", round(nmds_pa$stress, 4)),
     hjust = 1.1,
     vjust = -0.5,
-    size = 5
+    size = 6
   ) +
   labs(
     title = "",
@@ -364,8 +340,8 @@ p_nmds_pa <- ggplot(
   theme_minimal(base_size = 16) +
   theme(
     legend.position = "bottom",
-    legend.text = element_text(size = 14),
-    legend.title = element_text(size = 14, face = "bold")
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16, face = "bold")
   ) +
   guides(
     shape = guide_legend(
@@ -386,12 +362,14 @@ ggsave(
 ```
 
 
-# Check auf Kolinearität der Prädiktoren
+---
+
+## Check auf Kolinearität der Prädiktoren
 
 ```{r}
 #| label: collinearity-check
 
-# ── ASV-Tabelle auf Art-Ebene aggregieren (Traits variieren nur zwischen Arten!) ──
+# ASV-Tabelle auf Art-Ebene aggregieren (Traits variieren nur zwischen Arten!)
 asv_species <- asv_mat %>%
   as.data.frame() %>%
   rownames_to_column("sample") %>%
@@ -402,12 +380,12 @@ asv_species <- asv_mat %>%
 
 rownames(asv_species) <- gsub("_", " ", rownames(asv_species))
 
-# ── family aus meta_df holen (NICHT aus beetle_traits.csv!) ──────────────────
+# family aus meta_df holen (NICHT aus beetle_traits.csv!)
 family_lookup <- meta_df %>%
   distinct(beetle_species, family) %>%
   mutate(beetle_species = gsub("_", " ", beetle_species))
 
-# ── Trait-Matrix: family per Join ergänzen ────────────────────────────────────
+# Trait-Matrix: family per Join ergänzen
 trait_mat <- beetle_traits %>%
   dplyr::select(species, gilde, flower_visitor, wald,
                 body_length, hairiness_total, mycangia) %>%
@@ -427,7 +405,7 @@ trait_mat <- beetle_traits %>%
 cat("NAs pro Spalte in trait_mat:\n")
 print(colSums(is.na(trait_mat)))
 
-# ── Nur Arten mit vollständigen Trait-Daten (Pterostichus fehlt Morphologie) ──
+# Nur Arten mit vollständigen Trait-Daten (Pterostichus fehlt Morphologie)
 meta_complete_species <- trait_mat %>%
   filter(complete.cases(dplyr::select(., family, gilde, flower_visitor, wald,
                                        body_length, hairiness_total, mycangia)))
@@ -438,12 +416,12 @@ cat("\nArten mit vollständigen Traits:", length(shared_species), "von", nrow(as
 asv_species_complete <- asv_species[shared_species, ]
 trait_mat_complete   <- meta_complete_species[shared_species, ]
 
-# ── Kontinuierliche Traits: Spearman-Korrelation ──────────────────────────────
+# Kontinuierliche Traits: Spearman-Korrelation
 trait_mat_complete %>%
   select(body_length, hairiness_total) %>%
   cor(method = "spearman", use = "complete.obs")
 
-# ── Cramér's V (ohne rcompanion-Paket) ────────────────────────────────────────
+# Cramér's V (ohne rcompanion-Paket)
 cramers_v <- function(x, y) {
   tbl <- table(x, y)
   chi2 <- suppressWarnings(chisq.test(tbl, correct = FALSE)$statistic)
@@ -463,13 +441,18 @@ cat("wald vs family:", cramers_v(trait_mat_complete$wald, trait_mat_complete$fam
 ```
 Nur leichte Kollinearität mit neuen Daten (Corymbia)
 
-## 6) PERMANOVA
+---
+
+## Betadisper (Voraussetzungscheck)
 
 ```{r}
-#| label: permanova
+#| label: betadisper
 
-dist_bc <- vegdist(asv_mat, method = "bray")
+# Presence/Absence-Matrix (echtes P/A, konsistent mit der NMDS)
+asv_pa_full <- (asv_mat > 0) * 1
+dist_jac <- vegdist(asv_pa_full, method = "jaccard", binary = TRUE)
 
+# Trait-/Metadaten-Tabelle (wird auch bei PERMANOVA weiterverwendet)
 # family kommt direkt aus meta_df (bereits in ps_filtered.rds enthalten) --
 # nur die übrigen Traits werden aus beetle_traits.csv ergänzt.
 meta_permanova <- meta_df %>%
@@ -486,60 +469,14 @@ meta_permanova <- meta_df %>%
     family         = as.factor(family)
   )
 
-meta_permanova <- meta_permanova[match(rownames(asv_mat), meta_permanova$sample), ]
+meta_permanova <- meta_permanova[match(rownames(asv_pa_full), meta_permanova$sample), ]
 
-cat("NAs in Metadaten (Pterostichus hat keine Morpho-Daten):\n")
-print(colSums(is.na(meta_permanova)))
-
-# ── PERMANOVA 1: Käferart (Referenzmodell, volle Auflösung) ──────────────────
-cat("\n=== PERMANOVA ~ beetle_species ===\n")
-print(adonis2(asv_mat ~ beetle_species, data = meta_permanova,
-              permutations = 999, method = "bray"))
-
-# ── PERMANOVA 2: Phylogeny (Familie als Proxy) ───────────────────────────────
-cat("\n=== PERMANOVA ~ family (Phylogeny) ===\n")
-print(adonis2(asv_mat ~ family, data = meta_permanova,
-              permutations = 999, method = "bray"))
-
-# ── PERMANOVA 3: Functional Traits (Eco + Morph zusammen) ───────────────────
-cat("\n=== PERMANOVA ~ functional traits (Eco + Morph combined) ===\n")
-print(adonis2(asv_mat ~ gilde + wald + flower_visitor +
-                         body_length + hairiness_total + mycangia,
-              data = meta_permanova, permutations = 999, method = "bray",
-              na.action = na.omit))
-
-cat("\n=== PERMANOVA ~ ecological traits only ===\n")
-print(adonis2(asv_mat ~ gilde + wald + flower_visitor, data = meta_permanova,
-              permutations = 999, method = "bray", na.action = na.omit))
-
-cat("\n=== PERMANOVA ~ morphological traits only ===\n")
-print(adonis2(asv_mat ~ body_length + hairiness_total + mycangia, data = meta_permanova,
-              permutations = 999, method = "bray", na.action = na.omit))
-
-# ── PERMANOVA 4: Phylogeny + Functional Traits (Gesamtmodell) ───────────────
-cat("\n=== PERMANOVA ~ Phylogeny + Functional Traits ===\n")
-perm_multi <- adonis2(asv_mat ~ family + gilde + wald + flower_visitor +
-                                 body_length + hairiness_total + mycangia,
-                      data = meta_permanova, permutations = 999, method = "bray",
-                      na.action = na.omit)
-print(perm_multi)
-
-
-```
-
----
-
-## 7) Betadisper (Voraussetzungscheck)
-
-```{r}
-#| label: betadisper
-
-cat("=== Betadisper Familie ===\n")
-bd_fam <- betadisper(dist_bc, meta_permanova$family)
+cat("=== Betadisper Familie (Jaccard, P/A) ===\n")
+bd_fam <- betadisper(dist_jac, meta_permanova$family)
 print(permutest(bd_fam))
 
-cat("\n=== Betadisper Käferart ===\n")
-bd_sp <- betadisper(dist_bc, meta_permanova$beetle_species)
+cat("\n=== Betadisper Käferart (Jaccard, P/A) ===\n")
+bd_sp <- betadisper(dist_jac, meta_permanova$beetle_species)
 print(permutest(bd_sp))
 
 # Mittlere Distanz zum Zentroid pro Käferart
@@ -552,14 +489,78 @@ dispersion_per_species <- data.frame(
             sd_dispersion = sd(distance_to_centroid),
             n = n()) %>%
   arrange(desc(mean_dispersion))
-
 print(dispersion_per_species, n = Inf)
 ```
+
+---
+
+## PERMANOVA
+
+1. Auf PA umstellen
+2. Method=Jaccard
+3. Ips ausschließen weil Hetereogenität sehr hoch
+
+```{r}
+#| label: permanova
+
+dist_pa <- vegdist(asv_pa_full, method = "jaccard")
+
+# meta_permanova wurde bereits oben bei Betadisper erzeugt.
+
+cat("NAs in Metadaten (Pterostichus hat keine Morpho-Daten):\n")
+print(colSums(is.na(meta_permanova)))
+
+# PERMANOVA 1: Käferart (Referenzmodell, volle Auflösung)
+cat("\n=== PERMANOVA ~ beetle_species ===\n")
+print(adonis2(asv_pa_full ~ beetle_species, data = meta_permanova,
+              permutations = 999, method = "jaccard"))
+
+# PERMANOVA 2: Phylogeny (Familie als Proxy)
+cat("\n=== PERMANOVA ~ family (Phylogeny) ===\n")
+print(adonis2(asv_pa_full ~ family, data = meta_permanova,
+              permutations = 999, method = "jaccard"))
+
+# PERMANOVA 3: Functional Traits (Eco + Morph zusammen)
+cat("\n=== PERMANOVA ~ functional traits (Eco + Morph combined) ===\n")
+print(adonis2(asv_pa_full ~ gilde + wald + flower_visitor +
+                         body_length + hairiness_total + mycangia,
+              data = meta_permanova, permutations = 999, method = "jaccard",
+              na.action = na.omit))
+
+cat("\n=== PERMANOVA ~ ecological traits only ===\n")
+print(adonis2(asv_pa_full ~ gilde + wald + flower_visitor, data = meta_permanova,
+              permutations = 999, method = "jaccard", na.action = na.omit))
+
+# gilde und wald sind leicht kollinear (Cramer's V oben) -- Guild-Refit prueft,
+# ob wald ohne gilde noch aehnlich viel erklaert oder ob der Beitrag nur ueber
+# gilde "mitlaeuft"
+cat("\n=== PERMANOVA ~ ecological traits ohne gilde (Guild-Refit) ===\n")
+print(adonis2(asv_pa_full ~ wald + flower_visitor, data = meta_permanova,
+              permutations = 999, method = "jaccard", na.action = na.omit))
+
+cat("\n=== PERMANOVA ~ morphological traits only ===\n")
+print(adonis2(asv_pa_full ~ body_length + hairiness_total + mycangia, data = meta_permanova,
+              permutations = 999, method = "jaccard", na.action = na.omit))
+
+# PERMANOVA 4: Phylogeny + Functional Traits (Gesamtmodell)
+cat("\n=== PERMANOVA ~ Phylogeny + Functional Traits ===\n")
+perm_multi <- adonis2(asv_pa_full ~ family + gilde + wald + flower_visitor +
+                                 body_length + hairiness_total + mycangia,
+                      data = meta_permanova, permutations = 999, method = "jaccard",
+                      na.action = na.omit)
+print(perm_multi)
+
+
+```
+
+---
+
+
 Dispersionen sind sehr heterogen, in Diskussion erwähnen!
 
 ---
 
-## 8) Pairwise PERMANOVA
+## Pairwise PERMANOVA
 
 ```{r}
 #| label: pairwise-permanova
@@ -570,12 +571,12 @@ keep_species <- meta_permanova %>%
   pull(beetle_species)
 
 meta_sub <- meta_permanova %>% filter(beetle_species %in% keep_species)
-asv_sub  <- asv_mat[meta_sub$sample, ]
+asv_pa_sub <- asv_pa_full[meta_sub$sample, ]
 
 pw_clean <- pairwise.adonis(
-  asv_sub,
+  asv_pa_sub,
   factors    = meta_sub$beetle_species,
-  sim.method = "bray",
+  sim.method = "jaccard",
   p.adjust.m = "BH"
 )
 
@@ -584,7 +585,7 @@ pw_clean %>% arrange(desc(sig)) %>% print()
 
 ---
 
-## 9) Pairwise PERMANOVA: LaTeX-Tabelle
+## Pairwise PERMANOVA: LaTeX-Tabelle
 
 NEU MACHEN!
 
@@ -610,7 +611,7 @@ pw_table <- pw_clean %>%
   select(comparison, R2, p_adj, sig)
 
 cat("\\begin{longtable}{lccc}\n")
-cat("\\caption{Pairwise PERMANOVA comparisons of fungal community composition between beetle species (Bray-Curtis dissimilarity, 999 permutations, Benjamini-Hochberg corrected). Sorted by adjusted $p$-value. Significance: *** $p \\leq 0.001$, ** $p \\leq 0.01$, * $p \\leq 0.05$. \\textit{Rhagium inquisitor} and \\textit{R. mordax} were excluded due to insufficient replication ($n=1$).}\\\\\n")
+cat("\\caption{Pairwise PERMANOVA comparisons of fungal community composition between beetle species (Jaccard dissimilarity, presence/absence, 999 permutations, Benjamini-Hochberg corrected). Sorted by adjusted $p$-value. Significance: *** $p \\leq 0.001$, ** $p \\leq 0.01$, * $p \\leq 0.05$. \\textit{Rhagium inquisitor} and \\textit{R. mordax} were excluded due to insufficient replication ($n=1$).}\\\\\n")
 cat("\\label{tab:pairwise}\\\\\n")
 cat("\\toprule\n")
 cat("\\textbf{Comparison} & \\textbf{$R^2$} & \\textbf{$p_{adj}$} & \\textbf{Sig.} \\\\\n")
@@ -629,13 +630,15 @@ cat("\\bottomrule\n")
 cat("\\end{longtable}\n")
 ```
 
-# 9 b) Pairwise PERMANOVA within/ without genus
+---
+
+## Pairwise PERMANOVA: within vs. between genus
 
 Nicht aussagekräftig, evtl. weglassen
 
 ```{r}
-# ── Für jede Art: mittlere Pairwise-PERMANOVA-R² zu Arten DERSELBEN Familie
-# vs. mittlere R² zu Arten ANDERER Familien ──────────────────────────────────
+# Für jede Art: mittlere Pairwise-PERMANOVA-R² zu Arten DERSELBEN Familie
+# vs. mittlere R² zu Arten ANDERER Familien
 
 pw_with_family <- pw_clean %>%
   separate(pairs, into = c("sp1", "sp2"), sep = " vs ", remove = FALSE) %>%
@@ -671,92 +674,98 @@ print(species_phylo_signal, n = Inf)
 
 ---
 
-## 10) Varianzpartitionierung
+## Variance Partitioning (Jaccard / Presence-Absence)
 
 ::: callout-note
-Varpart **muss auf Art-Ebene aggregiert** laufen, nicht auf
-Proben-Ebene: Traits (`gilde`, `mycangia`, etc.) variieren nur
-zwischen Arten, nicht zwischen Individuen derselben Art. Würde man
-auf Proben-Ebene rechnen, fiele die gesamte within-species-Variabilität
-fälschlich in die Residuals statt korrekt unberücksichtigt zu bleiben
--- das drückt die erklärte Varianz aller drei Trait-Blöcke künstlich
-nach unten.
+Konsistent zur Jaccard-basierten NMDS/PERMANOVA/Betadisper weiter oben:
+Partitionierung direkt auf Proben-Ebene (n = 82) statt auf Artmittelwerte
+aggregiert, da `dist_pa` und `meta_permanova` (Jaccard-Distanz, P/A) bereits
+vorhanden sind. Keine Hellinger-Transformation noetig (P/A-Daten sind bereits
+binaer). `varpart()` akzeptiert ein `dist`-Objekt als Y direkt und rechnet
+dann intern ueber db-RDA (`capscale`), analog zu \textcite{Legendre1999} bzw.
+der Jaccard-PERMANOVA nach \textcite{Anderson2001}. Fokus wie in der
+Forschungsfrage: Phylogenie (Familie) vs. Functional Traits insgesamt. Der
+artspezifische Einzelbeitragstest fuer `wald` und `gilde` (Kollinearitaet,
+Guild-Refit, partial db-RDA) folgt weiter unten separat, da er nicht Teil der
+Phylogenie-vs-Traits-Partitionierung ist, sondern die Traits untereinander
+vergleicht. Die abundanzbasierte Variante (Hellinger-transformiert, RDA) ist
+archiviert in `Archive/06_AlphaBetaDiversity.qmd`.
 :::
 
 ```{r}
-#| label: varpart
+#| label: varpart-jaccard-pa
 
-# ── ASV-Matrix in relative Abundanz umwandeln (pro Probe normalisiert) ──────
-asv_mat_rel <- asv_mat / rowSums(asv_mat)
+# Nur Proben mit vollstaendigen Traits (Pterostichus fehlt Morphologie)
+meta_pa_complete <- meta_permanova %>%
+  filter(complete.cases(dplyr::select(., family, gilde, wald, flower_visitor,
+                                       body_length, hairiness_total, mycangia)))
+cat("Proben mit vollstaendigen Traits:", nrow(meta_pa_complete), "von", nrow(meta_permanova), "\n")
 
-# ── Jetzt erst auf Art-Ebene aggregieren ────────────────────────────────────
-asv_species <- asv_mat_rel %>%
-  as.data.frame() %>%
-  rownames_to_column("sample") %>%
-  left_join(meta_df %>% select(sample, beetle_species), by = "sample") %>%
-  group_by(beetle_species) %>%
-  summarise(across(where(is.numeric), mean), .groups = "drop") %>%
-  column_to_rownames("beetle_species")
+dist_pa_mat      <- as.matrix(dist_pa)
+dist_pa_complete <- as.dist(dist_pa_mat[meta_pa_complete$sample, meta_pa_complete$sample])
 
-rownames(asv_species) <- gsub("_", " ", rownames(asv_species))
+vp_pa <- varpart(dist_pa_complete,
+                  ~ family,
+                  ~ gilde + wald + flower_visitor + body_length + hairiness_total + mycangia,
+                  data = meta_pa_complete)
+print(vp_pa)
 
-# ── Trait-Matrix (family kommt aus meta_df, NICHT erneut aus beetle_traits) ──
-family_lookup <- meta_df %>%
-  distinct(beetle_species, family) %>%
-  mutate(beetle_species = gsub("_", " ", beetle_species))
+vp_pa_ind <- vp_pa$part$indfract$Adj.R.square
+a_pa <- round(vp_pa_ind[1] * 100, 1)  # Phylogeny unique
+b_pa <- round(vp_pa_ind[2] * 100, 1)  # Functional traits unique
+c_pa <- round(vp_pa_ind[3] * 100, 1)  # shared
+d_pa <- round(vp_pa_ind[4] * 100, 1)  # Residuals
 
-trait_mat <- beetle_traits %>%
-  dplyr::select(species, gilde, flower_visitor, wald,
-                body_length, hairiness_total, mycangia) %>%
-  dplyr::distinct(species, .keep_all = TRUE) %>%
-  dplyr::filter(species != "Grammoptera_ruficornis") %>%
-  mutate(species = gsub("_", " ", species)) %>%
-  left_join(family_lookup, by = c("species" = "beetle_species")) %>%
-  tibble::column_to_rownames("species") %>%
-  mutate(
-    gilde          = as.factor(gilde),
-    wald           = as.factor(wald),
-    flower_visitor = as.factor(flower_visitor),
-    mycangia       = as.factor(mycangia),  # bereits "yes"/"no"/NA -- keine Umkodierung nötig
-    family         = as.factor(family)
+cat("\nPhylogeny unique:", a_pa, "%\n")
+cat("Functional traits unique:", b_pa, "%\n")
+cat("Shared (Phylogeny ∩ Traits):", c_pa, "%\n")
+cat("Residuals:", d_pa, "%\n")
+
+# Zum Vergleich: die drei zugrunde liegenden Modelle (Step 1), via capscale
+cap_phylo    <- capscale(dist_pa_complete ~ family, data = meta_pa_complete)
+cap_traits   <- capscale(dist_pa_complete ~ gilde + wald + flower_visitor +
+                            body_length + hairiness_total + mycangia,
+                          data = meta_pa_complete)
+cap_combined <- capscale(dist_pa_complete ~ family + gilde + wald + flower_visitor +
+                            body_length + hairiness_total + mycangia,
+                          data = meta_pa_complete)
+
+r2_phylo_pa    <- RsquareAdj(cap_phylo)$adj.r.squared
+r2_traits_pa   <- RsquareAdj(cap_traits)$adj.r.squared
+r2_combined_pa <- RsquareAdj(cap_combined)$adj.r.squared
+
+bar_df_pa <- data.frame(
+  model = factor(c("Phylogeny", "Functional traits", "Phylogeny +\nFunctional traits"),
+                 levels = c("Phylogeny", "Functional traits", "Phylogeny +\nFunctional traits")),
+  r2    = c(r2_phylo_pa, r2_traits_pa, r2_combined_pa)
+)
+
+# Mischfarbe aus yellow2 und Blau berechnen (fuer die "kombiniert"-Balken)
+overlap_color_raw <- hex(mixcolor(
+  0.5,
+  sRGB(t(col2rgb("yellow2")) / 255),
+  sRGB(t(col2rgb("#2a78d6")) / 255)
+))
+overlap_color <- desaturate(overlap_color_raw, amount = 0.5)
+
+p_bars_pa <- ggplot(bar_df_pa, aes(x = model, y = r2, fill = model)) +
+  geom_col(width = 0.6, color = "grey30", linewidth = 0.4) +
+  geom_text(aes(label = sprintf("%.1f%%", r2 * 100)), vjust = -0.5, size = 6) +
+  scale_fill_manual(values = c(
+    "Phylogeny" = "#2a78d6",
+    "Functional traits" = "yellow",
+    "Phylogeny +\nFunctional traits" = overlap_color
+  )) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, max(bar_df_pa$r2) * 1.25)) +
+  labs(x = NULL, y = expression("Adjusted " * R^2)) +
+  theme_minimal(base_size = 16) +
+  theme(
+    legend.position = "none",
+    axis.text       = element_text(size = 24),
+    axis.title.y    = element_text(size = 24, face = "bold")
   )
 
-cat("NAs pro Spalte in trait_mat:\n")
-print(colSums(is.na(trait_mat)))
-
-# ── Nur Arten mit vollständigen Trait-Daten (Pterostichus fehlt Morphologie) ──
-meta_complete_species <- trait_mat %>%
-  filter(complete.cases(dplyr::select(., family, gilde, flower_visitor, wald,
-                                       body_length, hairiness_total, mycangia)))
-
-shared_species <- intersect(rownames(asv_species), rownames(meta_complete_species))
-cat("\nArten mit vollständigen Traits:", length(shared_species), "von", nrow(asv_species), "\n")
-
-asv_species_complete <- asv_species[shared_species, ]
-trait_mat_complete   <- meta_complete_species[shared_species, ]
-
-# ── 2-Wege VP: Phylogenie vs. Functional Traits (Eco + Morph zusammen) ──────
-vp2 <- varpart(asv_species_complete,
-               ~ family,
-               ~ gilde + wald + flower_visitor + body_length + hairiness_total + mycangia,
-               data    = trait_mat_complete,
-               transfo = "hel")
-print(vp2)
-plot(vp2)
-
-vp2_ind <- vp2$part$indfract$Adj.R.square
-a2 <- round(vp2_ind[1] * 100, 1)  # Phylogeny unique
-b2 <- round(vp2_ind[2] * 100, 1)  # Functional traits unique
-c2 <- round(vp2_ind[3] * 100, 1)  # gemeinsam (Phylo ∩ Traits)
-d2 <- round(vp2_ind[4] * 100, 1)  # Residuals
-
-cat("Phylogeny unique:", a2, "%\n")
-cat("Functional traits unique:", b2, "%\n")
-cat("Shared (Phylogeny ∩ Traits):", c2, "%\n")
-cat("Residuals:", d2, "%\n")
-
-# ── Venn-Diagramm (2 Kreise) ───────────────────────────────────────────────────
-fmt <- function(x) ifelse(x < 0, "neg.", paste0(x, "%"))
+fmt_pa <- function(x) ifelse(x < 0, "neg.", paste0(x, "%"))
 
 venn_df2 <- data.frame(
   x     = c(-0.25, 0.25),
@@ -765,175 +774,67 @@ venn_df2 <- data.frame(
   label = c("Phylogeny", "Functional traits")
 )
 
-ggplot() +
+p_venn_pa <- ggplot() +
   geom_circle(data = venn_df2, aes(x0 = x, y0 = y, r = r, fill = label),
               alpha = 0.4, color = "white", linewidth = 0) +
- scale_fill_manual(values = c(
-  "Phylogeny"         = "#2a78d6",  # Blau
-  "Functional traits" = "yellow"  # Amber/Gelb
-))+
-  annotate("text", x = -0.55, y = 0.6,  label = "Phylogeny", size = 6, fontface = "bold") +
-  annotate("text", x = 0.55,  y = 0.6,  label = "Functional traits", size = 6, fontface = "bold") +
-  annotate("text", x = -0.35, y = 0,    label = fmt(a2), size = 6) +
-  annotate("text", x = 0.35,  y = 0,    label = fmt(b2), size = 6) +
-  annotate("text", x = 0,     y = 0,    label = fmt(c2), size = 6, color = "grey30") +
-  annotate("text", x = 0,     y = -0.75, label = paste0("Residuals = ", fmt(d2)),
-           size = 6, color = "grey40") +
+  scale_fill_manual(values = c("Phylogeny" = "#2a78d6", "Functional traits" = "yellow"), name = "") +
+  annotate("text", x = -0.55, y = 0.6, label = "Phylogeny", size = 9, fontface = "bold") +
+  annotate("text", x = 0.55,  y = 0.6, label = "Functional traits", size = 9, fontface = "bold") +
+  annotate("text", x = -0.35, y = 0, label = fmt_pa(a_pa), size = 9) +
+  annotate("text", x = 0.35,  y = 0, label = fmt_pa(b_pa), size = 9) +
+  annotate("text", x = 0,     y = 0, label = fmt_pa(c_pa), size = 9, color = "grey30") +
+  annotate("text", x = 0, y = -0.75, label = paste0("Residuals = ", fmt_pa(d_pa)),
+           size = 9, color = "grey40") +
   coord_fixed(xlim = c(-1, 1), ylim = c(-0.9, 0.9)) +
   theme_void() +
   theme(legend.position = "none")
 
-ggsave(file.path(base_path, "Results/Figures/venn2_ASV.pdf"),
-       width = 8, height = 6, bg = "white")
-```
-
-# 11) VP: Einzelne Beiträge zur Varianz
-
-```{r}
-#| label: vp-individual-contributions
-
-# ── Isolierter Beitrag von 'wald' zur Functional-Traits-Varianz (Art-Ebene) ──
-# Vergleich: gilde allein vs. gilde + wald, um den eigenständigen Beitrag
-# von wald über gilde hinaus zu quantifizieren (kontrolliert für Kollinearität).
-vp_gilde_only <- varpart(asv_species_complete,
-                          ~ family,
-                          ~ gilde + flower_visitor + body_length + hairiness_total + mycangia,
-                          data    = trait_mat_complete,
-                          transfo = "hel")
-
-vp_gilde_wald <- varpart(asv_species_complete,
-                          ~ family,
-                          ~ gilde + wald + flower_visitor + body_length + hairiness_total + mycangia,
-                          data    = trait_mat_complete,
-                          transfo = "hel")
-
-cat("=== Functional Traits unique, OHNE wald ===\n")
-print(vp_gilde_only$part$indfract)
-ft_unique_without_wald <- round(vp_gilde_only$part$indfract$Adj.R.square[2] * 100, 1)
-cat("Functional Traits unique (ohne wald):", ft_unique_without_wald, "%\n\n")
-
-cat("=== Functional Traits unique, MIT wald ===\n")
-print(vp_gilde_wald$part$indfract)
-ft_unique_with_wald <- round(vp_gilde_wald$part$indfract$Adj.R.square[2] * 100, 1)
-cat("Functional Traits unique (mit wald):", ft_unique_with_wald, "%\n\n")
-
-cat("=== Isolierter Beitrag von wald (über gilde hinaus) ===\n")
-cat("Differenz:", round(ft_unique_with_wald - ft_unique_without_wald, 1), "Prozentpunkte\n")
-
-# ── Direkter partieller Test: trägt wald signifikant bei, wenn gilde schon im Modell ist? ──
-asv_hel <- decostand(asv_species_complete, method = "hellinger")
-rda_with_wald <- rda(asv_hel ~ wald + Condition(gilde + flower_visitor + body_length +
-                                                  hairiness_total + mycangia),
-                      data = trait_mat_complete)
-
-cat("\n=== Partieller RDA-Test: wald, kontrolliert für restliche Functional Traits ===\n")
-print(anova(rda_with_wald, permutations = 999))
-
-# ── Balkengrafik: die drei zugrunde liegenden Modelle (Step 1) ──────────────
-rda_phylo <- rda(decostand(asv_species_complete, "hellinger") ~ family,
-                  data = trait_mat_complete)
-rda_traits <- rda(decostand(asv_species_complete, "hellinger") ~ gilde + wald +
-                     flower_visitor + body_length + hairiness_total + mycangia,
-                   data = trait_mat_complete)
-rda_combined <- rda(decostand(asv_species_complete, "hellinger") ~ family + gilde + wald +
-                       flower_visitor + body_length + hairiness_total + mycangia,
-                     data = trait_mat_complete)
-
-r2_phylo    <- RsquareAdj(rda_phylo)$adj.r.squared
-r2_traits   <- RsquareAdj(rda_traits)$adj.r.squared
-r2_combined <- RsquareAdj(rda_combined)$adj.r.squared
-
-bar_df <- data.frame(
-  model = factor(c("Phylogeny", "Functional traits", "Phylogeny +\nFunctional traits"),
-                 levels = c("Phylogeny", "Functional traits", "Phylogeny +\nFunctional traits")),
-  r2    = c(r2_phylo, r2_traits, r2_combined)
-)
-
-
-# ── Mischfarbe aus yellow2 und Blau berechnen ─────────────────────────────────
-
-overlap_color_raw <- hex(mixcolor(
-  0.5,
-  sRGB(t(col2rgb("yellow2")) / 255),
-  sRGB(t(col2rgb("#2a78d6")) / 255)
-))
-
-# Sättigung reduzieren, um die Farbe gedeckter/matter zu machen
-overlap_color <- desaturate(overlap_color_raw, amount = 0.5)
-
-print(overlap_color)      # Nachher, gedeckter
-
-p_bars <- ggplot(bar_df, aes(x = model, y = r2, fill = model)) +
-  geom_col(width = 0.6, color = "grey30", linewidth = 0.4) +
-  geom_text(aes(label = sprintf("%.1f%%", r2 * 100)), vjust = -0.5, size = 5) +
-  scale_fill_manual(values = c(
-    "Phylogeny" = "#2a78d6",
-    "Functional traits" = "yellow",
-    "Phylogeny +\nFunctional traits" = overlap_color
-  )) +
-  scale_y_continuous(labels = scales::percent, limits = c(0, max(bar_df$r2) * 1.25)) +
-  labs(x = NULL, y = expression("Adjusted " * R^2)) +
-  theme_minimal(base_size = 13) +
-  theme(legend.position = "none")
-
-# ── Das Venn-Diagramm ────────────────────────────────────────────────────────
-p_venn <- ggplot() +
-  geom_circle(
-    data = venn_df2,
-    aes(x0 = x, y0 = y, r = r, fill = label),
-    alpha = 0.4,
-    color = "white",
-    linewidth = 0
-  ) +
-  scale_fill_manual(values = c(
-    "Phylogeny" = "#2a78d6",
-    "Functional traits" = "yellow"
-  ), name = "") +
-  annotate("text", x = -0.55, y = 0.6, label = "Phylogeny",
-           size = 6, fontface = "bold") +
-  annotate("text", x = 0.55, y = 0.6, label = "Functional traits",
-           size = 6, fontface = "bold") +
-  annotate("text", x = -0.35, y = 0, label = fmt(a2), size = 6) +
-  annotate("text", x = 0.35, y = 0, label = fmt(b2), size = 6) +
-  annotate("text", x = 0, y = 0, label = fmt(c2),
-           size = 6, color = "grey30") +
-  annotate(
-    "text",
-    x = 0,
-    y = -0.75,
-    label = paste0("Residuals = ", fmt(d2)),
-    size = 6,
-    color = "grey40"
-  ) +
-  labs(title = NULL) +
-  coord_fixed(xlim = c(-1, 1), ylim = c(-0.9, 0.9)) +
-  theme_void() +
-  theme(
-    legend.position = "none"
-  )
-
-# ── Kombinieren ────────────────────────────────────────────────────────────────
-combined_vp <- p_bars / p_venn +
+combined_vp_pa <- p_bars_pa / p_venn_pa +
   plot_layout(heights = c(1, 1.8)) +
-  plot_annotation(
-    tag_levels = "A",
-    theme = theme(
-      plot.tag = element_text(size = 18, face = "bold")
-    )
-  ) &
+  plot_annotation(tag_levels = "A",
+                   theme = theme(plot.tag = element_text(size = 30, face = "bold"))) &
   theme(plot.margin = margin(t = 2, b = 2, l = 5, r = 5))
 
-combined_vp
+combined_vp_pa
 
-
-ggsave(file.path(base_path, "Results/Figures/venn2_ASV_with_context.pdf"),
-       plot = combined_vp, width = 8, height = 10, bg = "white")
+ggsave(file.path(base_path, "Results/Figures/venn2_ASV_PA_with_context.pdf"),
+       plot = combined_vp_pa, width = 13, height = 10, bg = "white")
 ```
 
+---
 
+## Wald vs. Gilde: unabhaengige Effekte trotz Kollinearitaet (partial db-RDA)
 
+gilde und wald sind leicht kollinear (Cramer's V oben). Testet, ob wald
+(Wirtsbaum-Assoziation) und gilde (Foraging Guild) jeweils einen eigenen,
+unabhaengigen Beitrag leisten, wenn man alle anderen funktionalen Traits
+konditioniert -- nicht nur einer "traegt" den anderen mit.
 
-## 11) Session Info
+```{r}
+#| label: partial-dbrda-wald-gilde
+
+set.seed(42)
+cap_wald_cond <- capscale(
+  dist_pa_complete ~ wald + Condition(gilde + flower_visitor + body_length + hairiness_total + mycangia),
+  data = meta_pa_complete
+)
+cat("=== wald | gilde + flower_visitor + body_length + hairiness_total + mycangia ===\n")
+print(anova(cap_wald_cond, permutations = 999))
+print(RsquareAdj(cap_wald_cond))
+
+set.seed(42)
+cap_gilde_cond <- capscale(
+  dist_pa_complete ~ gilde + Condition(wald + flower_visitor + body_length + hairiness_total + mycangia),
+  data = meta_pa_complete
+)
+cat("\n=== gilde | wald + flower_visitor + body_length + hairiness_total + mycangia ===\n")
+print(anova(cap_gilde_cond, permutations = 999))
+print(RsquareAdj(cap_gilde_cond))
+```
+
+---
+
+## Session Info
 
 ```{r}
 #| label: session-info
@@ -941,3 +842,5 @@ ggsave(file.path(base_path, "Results/Figures/venn2_ASV_with_context.pdf"),
 
 sessionInfo()
 ```
+
+

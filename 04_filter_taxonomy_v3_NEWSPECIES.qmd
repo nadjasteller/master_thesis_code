@@ -385,19 +385,19 @@ phylum_colors <- c(
 plot_phylum <- ggplot(phylum_df,
                       aes(x = n, y = Phylum_clean, fill = Phylum_clean)) +
   geom_col() +
-  geom_text(aes(label = paste0(pct, "%")), hjust = -0.1, size = 5) +
+  geom_text(aes(label = paste0(pct, "%")), hjust = -0.1, size = 6) +
   scale_fill_manual(values = phylum_colors, na.value = "#969696") +
   labs(x = "Number of ASVs", y = NULL) +
   xlim(0, max(phylum_df$n) * 1.15) +
   theme_minimal(base_size = 16) +
   theme(
     legend.position = "none",
-    axis.text.y     = element_text(face = "italic")
+    axis.text.y     = element_text(face = "italic", size = 20)
   )
 
 plot_genus <- ggplot(genus_df, aes(x = n, y = Genus_clean)) +
   geom_col(fill = "bisque3") +
-  geom_text(aes(label = n), hjust = -0.1, size = 5) +
+  geom_text(aes(label = n), hjust = -0.1, size = 6) +
   labs(x = "Number of ASVs", y = NULL) +
   xlim(0, max(genus_df$n) * 1.15) +
   theme_minimal(base_size = 16) +
@@ -471,7 +471,10 @@ plot_phylum <- ggplot(phylum_family_df, aes(x = n_asv_per_sample, y = Phylum, fi
   theme_minimal(base_size = 16) +
   theme(
     legend.position = "bottom",
-    axis.text.y     = element_text(face = "italic")
+    legend.text     = element_text(size = 18),
+    legend.title    = element_text(size = 18, face = "bold"),
+    legend.key.size = unit(1, "cm"),
+    axis.text.y     = element_text(face = "italic", size = 20)
   )
 
 # ── Plot B: Top-15-Genera, normiert auf Proben/Familie ──────────────────────
@@ -501,7 +504,10 @@ plot_genus <- ggplot(genus_family_df, aes(x = n_asv_per_sample, y = Genus_clean,
   theme_minimal(base_size = 16) +
   theme(
     legend.position = "bottom",
-    axis.text.y     = element_text(face = "italic")
+    legend.text     = element_text(size = 18),
+    legend.title    = element_text(size = 18, face = "bold"),
+    legend.key.size = unit(1, "cm"),
+    axis.text.y     = element_text(face = "italic", size = 20)
   )
 
 # ── Kombinieren ────────────────────────────────────────────────────────────────
@@ -675,7 +681,7 @@ p_specaccum_single <- ggplot(specaccum_df, aes(x = n_samples, y = richness,
   geom_line(linewidth = 0.9) +
   geom_label_repel(data = label_df,
                    aes(label = beetle_species),
-                   size = 4.5,
+                   size = 6,
                    fontface = "italic",
                    show.legend = FALSE,
                    max.overlaps = Inf,

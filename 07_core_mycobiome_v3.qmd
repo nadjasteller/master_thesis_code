@@ -28,7 +28,7 @@ Baut auf `05_diversity_community_v3.qmd` auf (benötigt `asv_mat`,
 
 ---
 
-## 1) Pakete laden
+## Pakete laden
 
 ```{r}
 #| label: packages
@@ -53,7 +53,7 @@ library(patchwork)
 
 ---
 
-## 2) Daten laden
+## Daten laden
 
 ```{r}
 #| label: load-data
@@ -78,18 +78,38 @@ tax_asv <- as.data.frame(tax_table(ps)) %>%
     Species_clean = gsub("s__", "", Species)
   )
 
+# Manuell geprüfte BLAST-Korrekturen unklassifizierter ASVs (identisch zu
+# 06_indicator_species_v3_FINAL.qmd)
+blast_corrections_path <- file.path(base_path, "Data/Final/taxonomy_blast_corrections_log.csv")
+if (file.exists(blast_corrections_path)) {
+  corrections <- read.csv(blast_corrections_path, stringsAsFactors = FALSE)
+  for (i in seq_len(nrow(corrections))) {
+    asv <- corrections$asv_id[i]
+    if (asv %in% tax_asv$asv_id) {
+      tax_asv$Genus_clean[tax_asv$asv_id == asv]   <- corrections$Genus_blast[i]
+      tax_asv$Species_clean[tax_asv$asv_id == asv] <- corrections$Species_blast[i]
+    }
+  }
+  cat("BLAST-Korrekturen angewendet:", sum(corrections$asv_id %in% tax_asv$asv_id), "von", nrow(corrections), "\n")
+}
+# Manuelle Korrektur Corymbia rubra (Archive/06_indicator_species_v3.qmd):
+# ASV5 = 100% Hit auf Scheffersomyces shehatae/S. insectosa.
+tax_asv$Genus_clean[tax_asv$asv_id == "ASV5"]   <- "Scheffersomyces"
+tax_asv$Species_clean[tax_asv$asv_id == "ASV5"] <- "sp."
+
 species_order <- c(
   "Anthaxia fulgurans", "Anthaxia quadripunctata",
   "Chrysobothris affinis", "Buprestis haemorrhoidalis",
   "Rhagium bifasciatum", "Rhagium inquisitor", "Rhagium mordax",
   "Pachytodes cerambyciformis", "Rutpela maculata", "Stenurella melanura",
+  "Corymbia rubra",
   "Bolitophagus reticulatus", "Ips typographus", "Pterostichus aethiops"
 )
 ```
 
 ---
 
-## 3) Core Mycobiome berechnen
+## Core Mycobiome berechnen
 
 ```{r}
 #| label: core-mycobiome
@@ -119,20 +139,23 @@ core_summary <- core_df %>%
 ggplot(core_summary, aes(x = beetle_species, y = n, fill = beetle_species)) +
   geom_col() +
   scale_x_discrete(limits = species_order) +
-  scale_fill_manual(values = setNames(pal_d3("category20")(13), species_order)) +
-  labs(x = NULL, y = "Number of core ASVs",
-       title = "Core mycobiome size per beetle species (prevalence \u2265 70%)") +
-  theme_minimal(base_size = 12) +
+  scale_fill_manual(values = setNames(pal_d3("category20")(length(species_order)), species_order)) +
+  labs(x = NULL, y = "Number of core ASVs") +
+  theme_minimal(base_size = 16) +
   theme(axis.text.x  = element_text(angle = 45, hjust = 1, face = "italic"),
         legend.position = "none")
 
-ggsave(file.path(base_path, "Results/Figures/core_mycobiome_ASV.pdf"),
-       width = 10, height = 6, bg = "white")
+# nicht in der finalen Auswahl, Rendern deaktiviert:
+# ggsave(file.path(base_path, "Results/Figures/core_mycobiome_ASV.pdf"),
+#        width = 10, height = 6, bg = "white")
 ```
-# RESULTS: Indicator Species
+
+---
+
+## Core-Arten (benannt)
 
 ```{r}
-# ── Core-Arten (nicht ASVs) pro Käferart, zusammengefasst ────────────────────
+# Core-Arten (nicht ASVs) pro Käferart, zusammengefasst
 core_species_summary <- core_df %>%
   rename(sequence = asv_id) %>%   # core_df$asv_id enthält tatsächlich Sequenzen
   left_join(tax_asv %>% select(sequence, asv_id, Genus_clean, Species_clean),
@@ -163,7 +186,7 @@ core_species_summary %>%
 
 ---
 
-## 4) Jaccard-Ähnlichkeit zwischen Käferarten (RESULTS)
+## Jaccard-Ähnlichkeit zwischen Käferarten
 
 ```{r}
 #| label: jaccard-pairwise
@@ -201,12 +224,12 @@ species_pairs %>%
 
 ---
 
-## 5) Jaccard-Heatmap (mit Familien-Annotation)
+## Jaccard-Heatmap (mit Familien-Annotation)
 
 ```{r}
 #| label: jaccard-heatmap-final
 
-# ── Familien-Sortierung ────────────────────────────────────────────────────────
+# Familien-Sortierung
 family_full_to_abbr <- c(
   "Buprestidae"    = "BU", "Cerambycidae"   = "CE", "Tenebrionidae"  = "TE",
   "Curculionidae"  = "CU", "Carabidae"      = "CA"
@@ -226,7 +249,7 @@ species_sorted <- family_annotation %>%
   arrange(family) %>%
   pull(species)
 
-# ── Jaccard-Matrix bauen, sortieren, NUR unteres Dreieck behalten ────────────
+# Jaccard-Matrix bauen, sortieren, NUR unteres Dreieck behalten
 jaccard_mat <- matrix(NA, nrow = length(species_list), ncol = length(species_list),
                        dimnames = list(species_list, species_list))
 for (sp in species_list) jaccard_mat[sp, sp] <- 1
@@ -240,7 +263,7 @@ mat_sorted <- jaccard_mat[species_sorted, species_sorted]
 mat_lower  <- mat_sorted
 mat_lower[upper.tri(mat_lower, diag = TRUE)] <- NA
 
-# ── Long-Format für ggplot ─────────────────────────────────────────────────────
+# Long-Format für ggplot
 jaccard_plot_df <- mat_lower %>%
   as.data.frame() %>%
   rownames_to_column("sp1") %>%
@@ -250,7 +273,7 @@ jaccard_plot_df <- mat_lower %>%
     sp2 = factor(sp2, levels = species_sorted)
   )
 
-# ── Divergierende Skala: Blau (niedrig) -> Weiß (Schwelle) -> Rot (hoch) ──────
+# Divergierende Skala: Blau (niedrig) -> Weiß (Schwelle) -> Rot (hoch)
 threshold <- 0.15
 max_val   <- 0.4
 
@@ -272,7 +295,7 @@ jaccard_plot_df$cell_color <- vapply(jaccard_plot_df$jaccard, get_color, charact
 unique_colors <- sort(unique(na.omit(jaccard_plot_df$cell_color)))
 jaccard_plot_df$cell_color_factor <- factor(jaccard_plot_df$cell_color, levels = unique_colors)
 
-# ── Hauptplot ───────────────────────────────────────────────────────────────────
+# Hauptplot
 p_main <- ggplot(jaccard_plot_df, aes(x = sp2, y = fct_rev(sp1))) +
   geom_tile(aes(fill = cell_color_factor), color = "white", linewidth = 0.6) +
   scale_fill_manual(values = setNames(unique_colors, unique_colors),
@@ -280,12 +303,12 @@ p_main <- ggplot(jaccard_plot_df, aes(x = sp2, y = fct_rev(sp1))) +
   labs(x = NULL, y = NULL, title = "") +
   theme_minimal(base_size = 16) +
   theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size=14),
-    axis.text.y = element_text(face = "italic", size=14),
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size=16),
+    axis.text.y = element_text(face = "italic", size=16),
     panel.grid  = element_blank()
   )
 
-# ── Separate Legenden-Grafik ───────────────────────────────────────────────────
+# Separate Legenden-Grafik
 n_steps <- 200
 legend_df <- data.frame(y = seq(0, max_val, length.out = n_steps))
 legend_df$color_pos <- sapply(legend_df$y / max_val, function(f) {
@@ -303,13 +326,13 @@ legend_plot <- ggplot(legend_df, aes(x = 1, y = y, fill = color_pos)) +
   labs(x = NULL, y = NULL, title = "Jaccard Index") +
   theme_void() +
   theme(
-    axis.text.y = element_text(size = 14, hjust = 0, margin = margin(l = 4)),
-    plot.title  = element_text(size = 14, hjust = 0.5, face = "bold",
+    axis.text.y = element_text(size = 16, hjust = 0, margin = margin(l = 4)),
+    plot.title  = element_text(size = 16, hjust = 0.5, face = "bold",
     margin = margin(b = 15)),
     plot.margin = margin(l = 2, r = 12, t = 5, b = 5)
   )
 
-# ── Zusammenfügen & speichern ──────────────────────────────────────────────────
+# Zusammenfügen & speichern
 combined <- p_main + legend_plot + plot_layout(widths = c(10, 1))
 combined
 
@@ -317,10 +340,12 @@ ggsave(file.path(base_path, "Results/Figures/jaccard_heatmap.pdf"),
        width = 10, height = 6, bg = "white")
 ```
 
-# RESULTS: Welche Core-Arten werden geteilt?
+---
+
+## Welche Core-Arten werden geteilt?
 
 ```{r}
-# ── Core-Arten, die zwischen Paaren mit Jaccard > 0.25 geteilt werden ────────
+# Core-Arten, die zwischen Paaren mit Jaccard > 0.25 geteilt werden
 high_similarity_pairs <- list(
   c("Anthaxia quadripunctata", "Anthaxia fulgurans"),
   c("Anthaxia fulgurans", "Stenurella melanura"),
@@ -354,8 +379,9 @@ cat("Vereinigungsmenge (ASVs):", union_count, "\n")
 cat("Jaccard (ASV-Ebene):", length(shared) / union_count, "\n")
 ```
 
+---
 
-## 6) Abgleich mit Popa et al. (2026) Core/Potential-Core-Mycobiome
+## Abgleich mit Popa et al. (2026) Core/Potential-Core-Mycobiome
 
 ::: callout-note
 Verwendet `popa_core_species.R` (extrahiert aus den Supplementary
@@ -371,7 +397,7 @@ source(file.path(base_path, "Data/Metadata/popa_core_species.R"))
 cat("Core mycobiome Arten (Popa et al. 2026):", length(popa_core_14), "\n")
 cat("Potential core mycobiome Arten (Popa et al. 2026):", length(popa_potential_150), "\n")
 
-# ── Alle klassifizierten Taxa in Ips-Proben (unabhängig von IndVal) ───────────
+# Alle klassifizierten Taxa in Ips-Proben (unabhängig von IndVal)
 asv_long <- as.data.frame(otu_table(ps)) %>%
   rownames_to_column("sequence") %>%
   pivot_longer(-sequence, names_to = "sample", values_to = "reads") %>%
@@ -410,9 +436,10 @@ cat(sum(top10_match$popa_category != "not listed"), "von 10\n")
 print(top10_match)
 ```
 Diejenigen, die nur auf Gattungsebene klassifiziert wurden werden vermutl. bei Popa nicht gefunden
+
 ---
 
-## 7) Session Info
+## Session Info
 
 ```{r}
 #| label: session-info
@@ -420,3 +447,5 @@ Diejenigen, die nur auf Gattungsebene klassifiziert wurden werden vermutl. bei P
 
 sessionInfo()
 ```
+
+

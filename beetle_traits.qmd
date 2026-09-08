@@ -171,7 +171,7 @@ beetles <- beetles %>%
 # Gilde als Faktor
 beetles$gilde <- factor(beetles$gilde,
   levels = c("f", "a", "p", "m", "s"),
-  labels = c("fresh wood", "old wood", "wood fungi", "mould cavity", "special"))
+  labels = c("fresh wood", "old wood", "wood-decay", "mould cavity", "special"))
 
 # Nahrung als Faktor (inkl. zoophagous für Pterostichus)
 beetles$nahrung <- factor(beetles$nahrung,
@@ -383,7 +383,7 @@ combined <- ggplot() +
             color = "white", linewidth = 0.5, width = 0.95, height = 0.9) +
   geom_text(data = dplyr::filter(beetles_cat_long, trait == "Family"),
             aes(x = trait, y = species_clean, label = value),
-            size = 5, color = "black", na.rm = TRUE) +
+            size = 7, color = "black", na.rm = TRUE) +
 scale_fill_manual(values = c(
   "Buprestidae"   = "grey",
   "Cerambycidae"  = "grey",
@@ -399,9 +399,9 @@ scale_fill_manual(values = c(
             color = "white", linewidth = 0.5, width = 0.95, height = 0.9) +
   geom_text(data = dplyr::filter(beetles_cat_long, trait %in% c("Guild", "Forest type", "Flower visitor")),
             aes(x = trait, y = species_clean, label = value),
-            size = 5, na.rm = TRUE) +
+            size = 7, na.rm = TRUE) +
   scale_fill_manual(values = c(
-    "fresh wood" = "#E5F5E0", "old wood" = "#A1D99B", "wood fungi" = "#31A354",
+    "fresh wood" = "#E5F5E0", "old wood" = "#A1D99B", "wood-decay" = "#31A354",
     "deciduous"  = "#E5F5E0", "coniferous" = "#A1D99B", "both" = "#31A354",
     "yes"        = "#31A354", "no" = "#E5F5E0"
   ), na.value = "grey95") +
@@ -412,7 +412,7 @@ scale_fill_manual(values = c(
             color = "white", linewidth = 0.5, width = 0.95, height = 0.9) +
   geom_text(data = dplyr::filter(beetles_cat_long, trait == "Mycangia/Mycetome"),
             aes(x = trait, y = species_clean, label = value),
-            size = 5, na.rm = TRUE) +
+            size = 7, na.rm = TRUE) +
   scale_fill_manual(values = c("yes" = "#2171B5", "no" = "#DEEBF7"), na.value = "grey95") +
   ggnewscale::new_scale_fill() +
   # Layer 4: numerische Morphologie-Traits (Length, Hairiness) -- Blau
@@ -421,14 +421,14 @@ scale_fill_manual(values = c(
             color = "white", linewidth = 0.5, width = 0.95, height = 0.9) +
   geom_text(data = beetles_num_long,
             aes(x = trait, y = species_clean, label = round(value, 1)),
-            size = 5, na.rm = TRUE) +
+            size = 7, na.rm = TRUE) +
   scale_fill_gradient(low = "#DEEBF7", high = "#2171B5", na.value = "grey95") +
   scale_x_discrete(expand = c(0.03, 0.03), drop = FALSE, position = "top") +
   labs(x = NULL, y = NULL) +
-  theme_minimal() +
+  theme_minimal(base_size = 18) +
   theme(
-    axis.text.y     = element_text(face = "italic", size = 18),
-    axis.text.x     = element_text(face = "bold", size = 15, angle = 0),
+    axis.text.y     = element_text(face = "italic", size = 20),
+    axis.text.x     = element_text(face = "bold", size = 20, angle = 0),
     panel.grid      = element_blank(),
     legend.position = "none",
     panel.spacing   = unit(0.3, "lines")
@@ -437,7 +437,7 @@ scale_fill_manual(values = c(
 combined
 
 ggsave(file.path(base_path, "Results/Figures/beetle_traits_combined.pdf"),
-       plot = combined, width = 18, height = 7)
+       plot = combined, width = 18, height = 9)
 ```
 
 # Speichern
