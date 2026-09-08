@@ -1,0 +1,20 @@
+# R session artifacts
+.RData
+.RDataTmp
+.Rhistory
+Rplots.pdf
+
+# Tool configuration (not part of the analysis code)
+.claude/
+
+# OS/editor cruft
+desktop.ini
+Thumbs.db
+.DS_Store
+
+# Local scratch/output not meant for version control
+Latex/
+Latex_backup_*/
+10_thesis_update_summary.html
+10_thesis_update_summary.qmd
+10_thesis_update_summary_files/
