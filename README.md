@@ -106,7 +106,7 @@ primer-trimming shell scripts.
 
 If you use this code, please cite the associated Master's thesis. A
 citable, versioned snapshot of this repository is available via
-Zenodo: *DOI to be added*.
+Zenodo: *https://doi.org/10.5281/zenodo.22662416*.
 
 ## Contact
 
